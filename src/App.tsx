@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState, type ReactNode } from "react";
+import { useEffect, useMemo, useState, type FormEvent, type ReactNode } from "react";
 import { Boxes, CheckCircle2, CircleDollarSign, GitCompareArrows, Layers3, LockKeyhole, PackagePlus, Search, Settings2, Shapes, Wrench } from "lucide-react";
 import type { Bootstrap, Connector } from "./types";
 
@@ -6,6 +6,9 @@ const money = (cents: number) => new Intl.NumberFormat("tr-TR", { style: "curren
 
 export default function App() {
   const [data, setData] = useState<Bootstrap | null>(null);
+  const [authToken, setAuthToken] = useState(() => sessionStorage.getItem("kit-studio-token") || "");
+  const [authRequired, setAuthRequired] = useState(false);
+  const [authError, setAuthError] = useState("");
   const [profileId, setProfileId] = useState("profile-sq20");
   const [query, setQuery] = useState("");
   const [connectors, setConnectors] = useState<Record<string, number>>({ ELB: 8, TEE: 4, BAS: 4 });
@@ -18,7 +21,14 @@ export default function App() {
   const [view, setView] = useState<"builder" | "variants" | "catalogs">("builder");
   const [comparison, setComparison] = useState<any>(null);
 
-  useEffect(() => { fetch("/api/bootstrap").then((response) => response.json()).then(setData); }, []);
+  const apiFetch = (url: string, init: RequestInit = {}, token = authToken) => fetch(url, { ...init, headers: { ...(init.headers || {}), ...(token ? { authorization: `Bearer ${token}` } : {}) } });
+  async function loadBootstrap(token = authToken) {
+    const response = await apiFetch("/api/bootstrap", {}, token);
+    if (response.status === 401) { setAuthRequired(true); return false; }
+    if (!response.ok) throw new Error("Katalog yüklenemedi");
+    setData(await response.json()); setAuthRequired(false); setAuthError(""); return true;
+  }
+  useEffect(() => { loadBootstrap().catch(() => setAuthError("Katalog yüklenemedi")); }, []);
   const profile = data?.profiles.find((item) => item.id === profileId);
   const compatible = useMemo(() => data?.connectors.filter((item) => item.compatibility_group === profile?.compatibility_group) || [], [data, profile]);
   const chosen = Object.entries(connectors).map(([role, quantity]) => ({ connector: compatible.find((item) => item.connector_role === role), quantity })).filter((line): line is { connector: Connector; quantity: number } => Boolean(line.connector));
@@ -39,11 +49,11 @@ export default function App() {
     try {
       let variantId = savedVariantId;
       if (!variantId) {
-        const created = await fetch("/api/kits", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ name: "3 Katlı Raf", description: "Modüler üç katlı raf kiti", profile_id: profile.id }) });
+        const created = await apiFetch("/api/kits", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ name: "3 Katlı Raf", description: "Modüler üç katlı raf kiti", profile_id: profile.id }) });
         if (!created.ok) throw new Error("Kit oluşturulamadı");
         const kit = await created.json(); variantId = kit.variants[0].id; setSavedVariantId(variantId); setSavedKitId(kit.id);
       }
-      const response = await fetch(`/api/variants/${variantId}`, { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify({
+      const response = await apiFetch(`/api/variants/${variantId}`, { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify({
         profile_id: profile.id,
         connectors: Object.entries(connectors).map(([role, quantity]) => ({ role, quantity })),
         cuts: [{ quantity: 4, length_mm: 1800 }, { quantity: 8, length_mm: 1200 }, { quantity: 8, length_mm: 600 }],
@@ -59,7 +69,7 @@ export default function App() {
     if (!savedVariantId || !savedKitId) { setNotice("Önce mevcut varyantı kaydedin"); return; }
     setSaving(true); setNotice("");
     try {
-      const response = await fetch(`/api/variants/${savedVariantId}/clone`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ target_profile_id: targetProfileId }) });
+      const response = await apiFetch(`/api/variants/${savedVariantId}/clone`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ target_profile_id: targetProfileId }) });
       if (!response.ok) throw new Error("Varyant oluşturulamadı");
       const result = await response.json();
       setNotice(result.status === "INCOMPLETE" ? `Varyant eksik: ${result.missing_mappings.join(", ")}` : `${result.profile_name} varyantı oluşturuldu`);
@@ -70,12 +80,19 @@ export default function App() {
 
   async function loadComparison(kitId = savedKitId) {
     if (!kitId) { setView("variants"); return; }
-    const response = await fetch(`/api/kits/${kitId}/compare`);
+    const response = await apiFetch(`/api/kits/${kitId}/compare`);
     if (response.ok) setComparison(await response.json());
     setView("variants");
   }
 
-  if (!data) return <div className="loading"><span className="spinner" />Katalog hazırlanıyor…</div>;
+  async function login(event: FormEvent) {
+    event.preventDefault(); setAuthError("");
+    try { if (!await loadBootstrap(authToken)) { setAuthError("Erişim anahtarı geçersiz"); return; } sessionStorage.setItem("kit-studio-token", authToken); }
+    catch { setAuthError("Erişim anahtarı geçersiz"); }
+  }
+
+  if (authRequired) return <div className="auth-screen"><form onSubmit={login}><div className="brand-mark"><Wrench size={18}/></div><span className="eyebrow">DSDST Kit Studio</span><h1>Çalışma alanına giriş</h1><p>Sunucu erişim anahtarınızı girin.</p><input type="password" autoFocus value={authToken} onChange={(event)=>setAuthToken(event.target.value)} placeholder="Erişim anahtarı"/><button className="primary-button" type="submit">Giriş yap</button>{authError && <small>{authError}</small>}</form></div>;
+  if (!data) return <div className="loading"><span className="spinner" />{authError || "Katalog hazırlanıyor…"}</div>;
 
   return <div className="app-shell">
     <header className="topbar">
