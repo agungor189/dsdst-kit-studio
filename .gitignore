@@ -1,0 +1,9 @@
+node_modules/
+dist/
+dist-server/
+data/
+uploads/
+.env
+.DS_Store
+*.log
+.sites-runtime/
