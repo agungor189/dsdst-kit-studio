@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { Boxes, CheckCircle2, CircleDollarSign, GitCompareArrows, Layers3, LockKeyhole, PackagePlus, Search, Settings2, Shapes, Wrench } from "lucide-react";
 import type { Bootstrap, Connector } from "./types";
 
@@ -11,8 +11,12 @@ export default function App() {
   const [connectors, setConnectors] = useState<Record<string, number>>({ ELB: 8, TEE: 4, BAS: 4 });
   const [activeLibrary, setActiveLibrary] = useState<"connectors" | "profiles" | "complements">("connectors");
   const [savedVariantId, setSavedVariantId] = useState<string | null>(null);
+  const [savedKitId, setSavedKitId] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   const [notice, setNotice] = useState("");
+  const [targetProfileId, setTargetProfileId] = useState("profile-sq40");
+  const [view, setView] = useState<"builder" | "variants" | "catalogs">("builder");
+  const [comparison, setComparison] = useState<any>(null);
 
   useEffect(() => { fetch("/api/bootstrap").then((response) => response.json()).then(setData); }, []);
   const profile = data?.profiles.find((item) => item.id === profileId);
@@ -37,7 +41,7 @@ export default function App() {
       if (!variantId) {
         const created = await fetch("/api/kits", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ name: "3 Katlı Raf", description: "Modüler üç katlı raf kiti", profile_id: profile.id }) });
         if (!created.ok) throw new Error("Kit oluşturulamadı");
-        const kit = await created.json(); variantId = kit.variants[0].id; setSavedVariantId(variantId);
+        const kit = await created.json(); variantId = kit.variants[0].id; setSavedVariantId(variantId); setSavedKitId(kit.id);
       }
       const response = await fetch(`/api/variants/${variantId}`, { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify({
         profile_id: profile.id,
@@ -51,16 +55,36 @@ export default function App() {
     finally { setSaving(false); }
   }
 
+  async function createVariant() {
+    if (!savedVariantId || !savedKitId) { setNotice("Önce mevcut varyantı kaydedin"); return; }
+    setSaving(true); setNotice("");
+    try {
+      const response = await fetch(`/api/variants/${savedVariantId}/clone`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ target_profile_id: targetProfileId }) });
+      if (!response.ok) throw new Error("Varyant oluşturulamadı");
+      const result = await response.json();
+      setNotice(result.status === "INCOMPLETE" ? `Varyant eksik: ${result.missing_mappings.join(", ")}` : `${result.profile_name} varyantı oluşturuldu`);
+      await loadComparison(savedKitId);
+    } catch (error) { setNotice(error instanceof Error ? error.message : "Varyant hatası"); }
+    finally { setSaving(false); }
+  }
+
+  async function loadComparison(kitId = savedKitId) {
+    if (!kitId) { setView("variants"); return; }
+    const response = await fetch(`/api/kits/${kitId}/compare`);
+    if (response.ok) setComparison(await response.json());
+    setView("variants");
+  }
+
   if (!data) return <div className="loading"><span className="spinner" />Katalog hazırlanıyor…</div>;
 
   return <div className="app-shell">
     <header className="topbar">
       <div className="brand-mark"><Wrench size={18} /></div>
       <div><strong>DSDST</strong><span>Kit Studio</span></div>
-      <nav><button className="nav-active"><Layers3 size={16}/>Kit Builder</button><button><GitCompareArrows size={16}/>Varyantlar</button><button><Shapes size={16}/>Kataloglar</button></nav>
+      <nav><button className={view === "builder" ? "nav-active" : ""} onClick={()=>setView("builder")}><Layers3 size={16}/>Kit Builder</button><button className={view === "variants" ? "nav-active" : ""} onClick={()=>loadComparison()}><GitCompareArrows size={16}/>Varyantlar</button><button className={view === "catalogs" ? "nav-active" : ""} onClick={()=>setView("catalogs")}><Shapes size={16}/>Kataloglar</button></nav>
       <button className="icon-button" aria-label="Ayarlar"><Settings2 size={18}/></button>
     </header>
-    <main className="workspace">
+    <main className={`workspace ${view !== "builder" ? "hidden" : ""}`}>
       <aside className="library panel">
         <div className="panel-heading"><div><span className="eyebrow">Ürün kütüphanesi</span><h2>Parça seçimi</h2></div><Boxes size={20}/></div>
         <div className="segmented">
@@ -98,11 +122,20 @@ export default function App() {
         <PriceGroup title="Bağlantılar" cost={connectorCost} sale={connectorSale}/><PriceGroup title="Profiller" cost={profileCost} sale={profileSale}/><PriceGroup title="Tamamlayıcılar" cost={complementCost} sale={complementSale}/>
         <div className="grand-total"><div><span>Toplam maliyet</span><strong>{money(cost)}</strong></div><div><span>KDV hariç satış</span><strong>{money(sale)}</strong></div><div className="profit"><span>Brüt kâr</span><strong>{money(profit)}</strong></div><div><span>Brüt marj</span><strong>%{sale ? (profit/sale*100).toFixed(1) : "0,0"}</strong></div><div><span>KDV · %20</span><strong>{money(vat)}</strong></div><div className="vat-total"><span>KDV dahil satış</span><strong>{money(sale+vat)}</strong></div></div>
         {notice && <div className="save-notice"><CheckCircle2 size={15}/>{notice}</div>}
-        <button className="primary-button" disabled={saving} onClick={saveVariant}>{saving ? "Kaydediliyor…" : "Varyantı kaydet"}</button><button className="secondary-button"><GitCompareArrows size={16}/> Varyant oluştur</button>
+        <button className="primary-button" disabled={saving} onClick={saveVariant}>{saving ? "Kaydediliyor…" : "Varyantı kaydet"}</button>
+        <div className="variant-action"><select value={targetProfileId} onChange={(event)=>setTargetProfileId(event.target.value)}>{data.profiles.filter((item)=>item.id!==profileId).map((item)=><option key={item.id} value={item.id}>{item.name}</option>)}</select><button className="secondary-button" disabled={saving} onClick={createVariant}><GitCompareArrows size={16}/> Varyant oluştur</button></div>
         <p className="price-note"><LockKeyhole size={13}/> Bağlantı fiyatları Panel kaynağından salt okunur alınır.</p>
       </aside>
     </main>
+    {view === "variants" && <section className="page-view"><div className="page-title"><div><span className="eyebrow">Karşılaştırma</span><h1>Varyant ekonomisi</h1></div><button className="secondary-button compact" onClick={()=>setView("builder")}>Builder’a dön</button></div>
+      {!comparison ? <div className="empty-state"><GitCompareArrows size={34}/><h2>Henüz karşılaştırılacak varyant yok</h2><p>Builder’da ilk varyantı kaydedip hedef profili seçerek yeni varyant oluşturun.</p></div> : <div className="compare-wrap"><table className="compare-table"><thead><tr><th>Metrik</th>{comparison.variants.map((item:any)=><th key={item.id}>{item.profile_name}<span className={`pill ${item.status.toLowerCase()}`}>{item.status}</span></th>)}</tr></thead><tbody>
+        <CompareRow label="Bağlantı maliyeti" variants={comparison.variants} field="connectors.cost_cents"/><CompareRow label="Profil maliyeti" variants={comparison.variants} field="profiles.cost_cents"/><CompareRow label="Tamamlayıcı maliyeti" variants={comparison.variants} field="complementary.cost_cents"/><CompareRow label="Toplam maliyet" variants={comparison.variants} field="total_cost_cents" strong/><CompareRow label="KDV hariç satış" variants={comparison.variants} field="sale_ex_vat_cents"/><CompareRow label="Brüt kâr" variants={comparison.variants} field="gross_profit_cents" strong/><tr><td>Brüt marj</td>{comparison.variants.map((item:any)=><td key={item.id}>%{(item.pricing.gross_margin_basis_points/100).toFixed(1)}</td>)}</tr><tr><td>Toplam profil</td>{comparison.variants.map((item:any)=><td key={item.id}>{(item.pricing.profiles.total_millimeters/1000).toFixed(1)} m</td>)}</tr><tr><td>Toplam ağırlık</td>{comparison.variants.map((item:any)=><td key={item.id}>{(item.pricing.profiles.weight_grams/1000).toFixed(2)} kg</td>)}</tr>
+      </tbody></table></div>}
+    </section>}
+    {view === "catalogs" && <section className="page-view"><div className="page-title"><div><span className="eyebrow">Katalog yönetimi</span><h1>Kit bileşenleri</h1></div></div><div className="catalog-grid"><CatalogStat icon={<Shapes/>} label="Profil" value={data.profiles.length} detail="Square ve Round teknik profiller"/><CatalogStat icon={<Boxes/>} label="Bağlantı" value={data.connectors.length} detail="Panel’den senkronize, fiyatlar kilitli"/><CatalogStat icon={<PackagePlus/>} label="Tamamlayıcı" value={data.complementaryProducts.length} detail="Adet, metre ve m² birimleri"/></div></section>}
   </div>;
 }
 
 function PriceGroup({title,cost,sale}:{title:string;cost:number;sale:number}) { return <div className="price-group"><h3>{title}</h3><div><span>Maliyet</span><strong>{money(cost)}</strong></div><div><span>Satış</span><strong>{money(sale)}</strong></div></div>; }
+function CompareRow({label,variants,field,strong=false}:{label:string;variants:any[];field:string;strong?:boolean}) { const read=(item:any)=>field.split(".").reduce((value,key)=>value[key],item.pricing); return <tr className={strong?"strong-row":""}><td>{label}</td>{variants.map((item)=><td key={item.id}>{money(read(item))}{item.missing_mappings?.length ? <small>Eksik: {item.missing_mappings.join(", ")}</small> : null}</td>)}</tr>; }
+function CatalogStat({icon,label,value,detail}:{icon:ReactNode;label:string;value:number;detail:string}) { return <article className="catalog-stat"><div>{icon}</div><span>{label}</span><strong>{value}</strong><p>{detail}</p></article>; }

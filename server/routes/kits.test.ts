@@ -34,3 +34,24 @@ test("server stores BOM snapshots and recalculates totals", async () => {
   assert.equal(detail.pricing.profiles.total_millimeters, 16800);
   assert.ok(detail.pricing.gross_profit_cents > 0);
 });
+
+test("variant conversion preserves roles, quantities and cuts while resolving new SKUs", async () => {
+  const created = await (await fetch(`${baseUrl}/api/kits`, json("POST", { name: "Varyantlı Raf", profile_id: "profile-sq20" }))).json() as any;
+  const sourceId = created.variants[0].id;
+  await fetch(`${baseUrl}/api/variants/${sourceId}`, json("PUT", { profile_id: "profile-sq20", connectors: [{ role: "ELB", quantity: 8 }, { role: "TEE", quantity: 4 }], cuts: [{ quantity: 8, length_mm: 1200 }, { quantity: 8, length_mm: 600 }], complementary_items: [] }));
+  const converted = await (await fetch(`${baseUrl}/api/variants/${sourceId}/clone`, json("POST", { target_profile_id: "profile-sq40" }))).json() as any;
+  assert.equal(converted.status, "DRAFT");
+  assert.deepEqual(converted.connectors.map((line: any) => [line.connector_role, line.quantity, line.sku_snapshot]), [["ELB", 8, "AL-S40-ELB"], ["TEE", 4, "AL-S40-TEE"]]);
+  assert.deepEqual(converted.cuts.map((line: any) => [line.quantity, line.length_mm]), [[8, 1200], [8, 600]]);
+});
+
+test("Square to Round conversion marks missing role as INCOMPLETE and blocks approval", async () => {
+  const created = await (await fetch(`${baseUrl}/api/kits`, json("POST", { name: "Eksik Varyant", profile_id: "profile-sq20" }))).json() as any;
+  const sourceId = created.variants[0].id;
+  await fetch(`${baseUrl}/api/variants/${sourceId}`, json("PUT", { profile_id: "profile-sq20", connectors: [{ role: "ELB", quantity: 8 }, { role: "3W", quantity: 2 }], cuts: [{ quantity: 4, length_mm: 1800 }], complementary_items: [] }));
+  const converted = await (await fetch(`${baseUrl}/api/variants/${sourceId}/clone`, json("POST", { target_profile_id: "profile-rd337" }))).json() as any;
+  assert.equal(converted.status, "INCOMPLETE");
+  assert.deepEqual(converted.missing_mappings, ["3W"]);
+  const approval = await fetch(`${baseUrl}/api/variants/${converted.id}/approve`, json("POST", {}));
+  assert.equal(approval.status, 409);
+});
