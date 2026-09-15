@@ -1,0 +1,21 @@
+services:
+  kit-studio:
+    build: .
+    container_name: dsdst-kit-studio
+    restart: unless-stopped
+    ports:
+      - "3012:3012"
+    environment:
+      NODE_ENV: production
+      PORT: 3012
+      DB_PATH: /data/dsdst-kit-studio.db
+      UPLOAD_DIR: /app/uploads
+      PANEL_API_URL: ${PANEL_API_URL}
+      PANEL_API_KEY: ${PANEL_API_KEY}
+      KIT_STUDIO_API_TOKEN: ${KIT_STUDIO_API_TOKEN:-}
+      ALLOWED_ORIGINS: ${ALLOWED_ORIGINS:-http://localhost:3012}
+    volumes:
+      - ${KIT_STUDIO_DATA_DIR:-./data}:/data
+      - ${KIT_STUDIO_UPLOADS_DIR:-./uploads}:/app/uploads
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
