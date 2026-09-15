@@ -1,0 +1,44 @@
+export type PricingInput = {
+  connectors: { quantity: number; purchase_price_snapshot_cents: number; sale_price_snapshot_cents: number }[];
+  profile: { purchase_price_snapshot_cents: number; sale_price_snapshot_cents: number; weight_per_meter_snapshot_kg: number } | null;
+  cuts: { quantity: number; length_mm: number }[];
+  complementary: { quantity_milli: number; purchase_price_snapshot_cents: number; sale_price_snapshot_cents: number }[];
+  vatRateBasisPoints: number;
+};
+
+export type PricingResult = {
+  connectors: { cost_cents: number; sale_cents: number };
+  profiles: { cost_cents: number; sale_cents: number; total_millimeters: number; total_meters_milli: number; weight_grams: number };
+  complementary: { cost_cents: number; sale_cents: number };
+  total_cost_cents: number; sale_ex_vat_cents: number; gross_profit_cents: number;
+  gross_margin_basis_points: number; vat_rate_basis_points: number; vat_cents: number; sale_inc_vat_cents: number;
+};
+
+const roundedRatio = (value: number, numerator: number, denominator: number) => Math.round((value * numerator) / denominator);
+
+export function calculatePricing(input: PricingInput): PricingResult {
+  const connectorCost = input.connectors.reduce((sum, item) => sum + item.purchase_price_snapshot_cents * item.quantity, 0);
+  const connectorSale = input.connectors.reduce((sum, item) => sum + item.sale_price_snapshot_cents * item.quantity, 0);
+  const totalMillimeters = input.cuts.reduce((sum, cut) => sum + cut.quantity * cut.length_mm, 0);
+  const profileCost = input.profile ? roundedRatio(input.profile.purchase_price_snapshot_cents, totalMillimeters, 1000) : 0;
+  const profileSale = input.profile ? roundedRatio(input.profile.sale_price_snapshot_cents, totalMillimeters, 1000) : 0;
+  const weightGrams = input.profile ? Math.round(input.profile.weight_per_meter_snapshot_kg * totalMillimeters) : 0;
+  const complementaryCost = input.complementary.reduce((sum, item) => sum + roundedRatio(item.purchase_price_snapshot_cents, item.quantity_milli, 1000), 0);
+  const complementarySale = input.complementary.reduce((sum, item) => sum + roundedRatio(item.sale_price_snapshot_cents, item.quantity_milli, 1000), 0);
+  const totalCost = connectorCost + profileCost + complementaryCost;
+  const saleExVat = connectorSale + profileSale + complementarySale;
+  const grossProfit = saleExVat - totalCost;
+  const vat = roundedRatio(saleExVat, input.vatRateBasisPoints, 10_000);
+  return {
+    connectors: { cost_cents: connectorCost, sale_cents: connectorSale },
+    profiles: { cost_cents: profileCost, sale_cents: profileSale, total_millimeters: totalMillimeters, total_meters_milli: totalMillimeters, weight_grams: weightGrams },
+    complementary: { cost_cents: complementaryCost, sale_cents: complementarySale },
+    total_cost_cents: totalCost,
+    sale_ex_vat_cents: saleExVat,
+    gross_profit_cents: grossProfit,
+    gross_margin_basis_points: saleExVat ? Math.round((grossProfit * 10_000) / saleExVat) : 0,
+    vat_rate_basis_points: input.vatRateBasisPoints,
+    vat_cents: vat,
+    sale_inc_vat_cents: saleExVat + vat,
+  };
+}

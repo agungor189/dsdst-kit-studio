@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { Boxes, CircleDollarSign, GitCompareArrows, Layers3, LockKeyhole, PackagePlus, Search, Settings2, Shapes, Wrench } from "lucide-react";
+import { Boxes, CheckCircle2, CircleDollarSign, GitCompareArrows, Layers3, LockKeyhole, PackagePlus, Search, Settings2, Shapes, Wrench } from "lucide-react";
 import type { Bootstrap, Connector } from "./types";
 
 const money = (cents: number) => new Intl.NumberFormat("tr-TR", { style: "currency", currency: "TRY", maximumFractionDigits: 2 }).format(cents / 100);
@@ -10,6 +10,9 @@ export default function App() {
   const [query, setQuery] = useState("");
   const [connectors, setConnectors] = useState<Record<string, number>>({ ELB: 8, TEE: 4, BAS: 4 });
   const [activeLibrary, setActiveLibrary] = useState<"connectors" | "profiles" | "complements">("connectors");
+  const [savedVariantId, setSavedVariantId] = useState<string | null>(null);
+  const [saving, setSaving] = useState(false);
+  const [notice, setNotice] = useState("");
 
   useEffect(() => { fetch("/api/bootstrap").then((response) => response.json()).then(setData); }, []);
   const profile = data?.profiles.find((item) => item.id === profileId);
@@ -25,6 +28,28 @@ export default function App() {
   const cost = connectorCost + profileCost + complementCost;
   const sale = connectorSale + profileSale + complementSale;
   const profit = sale - cost; const vat = Math.round(sale * 0.2);
+
+  async function saveVariant() {
+    if (!profile) return;
+    setSaving(true); setNotice("");
+    try {
+      let variantId = savedVariantId;
+      if (!variantId) {
+        const created = await fetch("/api/kits", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ name: "3 Katlı Raf", description: "Modüler üç katlı raf kiti", profile_id: profile.id }) });
+        if (!created.ok) throw new Error("Kit oluşturulamadı");
+        const kit = await created.json(); variantId = kit.variants[0].id; setSavedVariantId(variantId);
+      }
+      const response = await fetch(`/api/variants/${variantId}`, { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify({
+        profile_id: profile.id,
+        connectors: Object.entries(connectors).map(([role, quantity]) => ({ role, quantity })),
+        cuts: [{ quantity: 4, length_mm: 1800 }, { quantity: 8, length_mm: 1200 }, { quantity: 8, length_mm: 600 }],
+        complementary_items: [{ product_id: "comp-mdf", quantity: 1.8 }, { product_id: "comp-wheel", quantity: 4 }],
+      }) });
+      if (!response.ok) throw new Error("Varyant kaydedilemedi");
+      setNotice("BOM ve fiyat snapshot’ı kaydedildi");
+    } catch (error) { setNotice(error instanceof Error ? error.message : "Kayıt hatası"); }
+    finally { setSaving(false); }
+  }
 
   if (!data) return <div className="loading"><span className="spinner" />Katalog hazırlanıyor…</div>;
 
@@ -72,7 +97,8 @@ export default function App() {
         <div className="panel-heading"><div><span className="eyebrow">Canlı fiyat analizi</span><h2>Varyant özeti</h2></div><CircleDollarSign size={21}/></div>
         <PriceGroup title="Bağlantılar" cost={connectorCost} sale={connectorSale}/><PriceGroup title="Profiller" cost={profileCost} sale={profileSale}/><PriceGroup title="Tamamlayıcılar" cost={complementCost} sale={complementSale}/>
         <div className="grand-total"><div><span>Toplam maliyet</span><strong>{money(cost)}</strong></div><div><span>KDV hariç satış</span><strong>{money(sale)}</strong></div><div className="profit"><span>Brüt kâr</span><strong>{money(profit)}</strong></div><div><span>Brüt marj</span><strong>%{sale ? (profit/sale*100).toFixed(1) : "0,0"}</strong></div><div><span>KDV · %20</span><strong>{money(vat)}</strong></div><div className="vat-total"><span>KDV dahil satış</span><strong>{money(sale+vat)}</strong></div></div>
-        <button className="primary-button">Varyantı kaydet</button><button className="secondary-button"><GitCompareArrows size={16}/> Varyant oluştur</button>
+        {notice && <div className="save-notice"><CheckCircle2 size={15}/>{notice}</div>}
+        <button className="primary-button" disabled={saving} onClick={saveVariant}>{saving ? "Kaydediliyor…" : "Varyantı kaydet"}</button><button className="secondary-button"><GitCompareArrows size={16}/> Varyant oluştur</button>
         <p className="price-note"><LockKeyhole size={13}/> Bağlantı fiyatları Panel kaynağından salt okunur alınır.</p>
       </aside>
     </main>

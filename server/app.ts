@@ -9,6 +9,7 @@ import { ZodError } from "zod";
 import { appAuth } from "./middleware/appAuth.js";
 import { createCatalogRouter } from "./routes/catalog.js";
 import { createCompatibilityRouter } from "./routes/compatibility.js";
+import { createKitsRouter } from "./routes/kits.js";
 
 export function createApp(db: Database.Database) {
   const app = express();
@@ -19,7 +20,7 @@ export function createApp(db: Database.Database) {
   app.use(express.json({ limit: "1mb" }));
   app.use("/uploads", express.static(path.resolve(process.env.UPLOAD_DIR || "uploads"), { fallthrough: false, dotfiles: "deny", immutable: true, maxAge: "1d" }));
   app.get("/api/health", (_req, res) => res.json({ status: "ok" }));
-  app.use("/api", appAuth, createCatalogRouter(db), createCompatibilityRouter(db));
+  app.use("/api", appAuth, createCatalogRouter(db), createCompatibilityRouter(db), createKitsRouter(db));
 
   const dist = path.resolve("dist");
   if (fs.existsSync(dist)) {
