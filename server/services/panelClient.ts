@@ -8,11 +8,11 @@ export type PanelConnector = {
   tube_type_code?: string; size_code?: string; size?: string; pipe_size?: string;
   normalized_material?: string; normalized_size?: string; normalized_tube_type?: string; normalized_pipe_size?: string;
   model?: string;
-  image?: string; purchase_cost?: number; sale_price?: number; central_stock?: number; updated_at?: string;
+  image?: string; purchase_cost?: number; sale_price?: number; central_stock?: number; weight_grams?: number; weight?: number; updated_at?: string;
 };
 
 export type PanelProfile = { id: string; name: string; shape?: string; dimension?: string; material?: string; thickness?: string; effective_price_per_meter?: number; price_per_meter?: number; weight_per_meter?: number; stock_length_mm?: number; updated_at?: string };
-export type PanelComplement = { id: string; name: string; category?: string; description?: string; supplier_reference?: string; unit?: string; purchase_price?: number; image?: string; notes?: string; updated_at?: string };
+export type PanelComplement = { id: string; name: string; category?: string; description?: string; supplier_reference?: string; unit?: string; purchase_price?: number; unit_weight_kg?: number; weight_per_unit_grams?: number; image?: string; notes?: string; updated_at?: string };
 export type SyncResult = { synced: number; profilesSynced: number; complementsSynced: number; compatible: number; unresolved: number; lastSyncedAt: string };
 
 function config() {
@@ -78,16 +78,16 @@ export async function syncPanelConnectors(db: Database.Database, fetchImpl: type
     const upsertCache = db.prepare(`INSERT INTO panel_connector_cache
       (product_id,sku,name_tr,name_en,supplier_code,material,form,form_code,tube_type_code,size_code,size,pipe_size,
        normalized_material,normalized_size,normalized_tube_type,normalized_pipe_size,image,purchase_cost_cents,sale_price_cents,
-       central_stock,panel_updated_at,synced_at,compatibility_status,compatibility_source,compatibility_note,catalog_active,model)
+       central_stock,unit_weight_grams,panel_updated_at,synced_at,compatibility_status,compatibility_source,compatibility_note,catalog_active,model)
       VALUES (@id,@sku,@name_tr,@name_en,@supplier_code,@material,@form,@form_code,@tube_type_code,@size_code,@size,@pipe_size,
        @normalized_material,@normalized_size,@normalized_tube_type,@normalized_pipe_size,@image,@purchase_cost_cents,@sale_price_cents,
-       @central_stock,@updated_at,CURRENT_TIMESTAMP,@compatibility_status,@compatibility_source,@compatibility_note,1,@model)
+       @central_stock,@unit_weight_grams,@updated_at,CURRENT_TIMESTAMP,@compatibility_status,@compatibility_source,@compatibility_note,1,@model)
       ON CONFLICT(product_id) DO UPDATE SET sku=excluded.sku,name_tr=excluded.name_tr,name_en=excluded.name_en,
        supplier_code=excluded.supplier_code,material=excluded.material,form=excluded.form,form_code=excluded.form_code,
        tube_type_code=excluded.tube_type_code,size_code=excluded.size_code,size=excluded.size,pipe_size=excluded.pipe_size,
        normalized_material=excluded.normalized_material,normalized_size=excluded.normalized_size,
        normalized_tube_type=excluded.normalized_tube_type,normalized_pipe_size=excluded.normalized_pipe_size,image=excluded.image,
-       purchase_cost_cents=excluded.purchase_cost_cents,sale_price_cents=excluded.sale_price_cents,central_stock=excluded.central_stock,
+       purchase_cost_cents=excluded.purchase_cost_cents,sale_price_cents=excluded.sale_price_cents,central_stock=excluded.central_stock,unit_weight_grams=excluded.unit_weight_grams,
        panel_updated_at=excluded.panel_updated_at,synced_at=CURRENT_TIMESTAMP,compatibility_status=excluded.compatibility_status,
        compatibility_source=excluded.compatibility_source,compatibility_note=excluded.compatibility_note,catalog_active=1,model=excluded.model`);
     const removeAuto = db.prepare("DELETE FROM connector_compatibility WHERE product_id=?");
@@ -118,7 +118,7 @@ export async function syncPanelConnectors(db: Database.Database, fetchImpl: type
           normalized_pipe_size: row.normalized_pipe_size || null, image: row.image || null,
           model: row.model || null,
           purchase_cost_cents: Math.round(Number(row.purchase_cost || 0) * 100), sale_price_cents: Math.round(Number(row.sale_price || 0) * 100),
-          central_stock: Math.trunc(Number(row.central_stock || 0)), updated_at: row.updated_at || null,
+          central_stock: Math.trunc(Number(row.central_stock || 0)), unit_weight_grams: Number(row.weight_grams || row.weight || 0) || null, updated_at: row.updated_at || null,
           compatibility_status: mapped.status, compatibility_source: mapped.source, compatibility_note: mapped.note,
         });
         if (mapped.status === "UNRESOLVED") { removeAuto.run(row.id); continue; }
@@ -135,9 +135,9 @@ export async function syncPanelConnectors(db: Database.Database, fetchImpl: type
       const upsertSpec = db.prepare(`INSERT INTO profile_specs (id,shape,material,width_mm,height_mm,outside_diameter_mm,nominal_size,wall_thickness_mm,compatibility_group,size_compatibility_group)
         VALUES (@id,@shape,@material,@width,@height,@diameter,@nominal,@wall,@key,@group)
         ON CONFLICT(id) DO UPDATE SET shape=excluded.shape,material=excluded.material,width_mm=excluded.width_mm,height_mm=excluded.height_mm,outside_diameter_mm=excluded.outside_diameter_mm,nominal_size=excluded.nominal_size,wall_thickness_mm=excluded.wall_thickness_mm,size_compatibility_group=excluded.size_compatibility_group`);
-      const upsertProfile = db.prepare(`INSERT INTO profiles (id,spec_id,name,raw_length_mm,weight_per_meter_kg,purchase_price_per_meter_cents,sale_price_per_meter_cents,image_path,active,catalog_source,panel_updated_at,catalog_active)
-        VALUES (@id,@spec_id,@name,@raw_length,@weight,@price,@price,NULL,1,'PANEL',@updated_at,1)
-        ON CONFLICT(id) DO UPDATE SET spec_id=excluded.spec_id,name=excluded.name,raw_length_mm=excluded.raw_length_mm,weight_per_meter_kg=excluded.weight_per_meter_kg,purchase_price_per_meter_cents=excluded.purchase_price_per_meter_cents,active=1,catalog_source='PANEL',panel_updated_at=excluded.panel_updated_at,catalog_active=1,updated_at=CURRENT_TIMESTAMP`);
+      const upsertProfile = db.prepare(`INSERT INTO profiles (id,spec_id,name,raw_length_mm,weight_per_meter_kg,purchase_price_per_meter_cents,sale_price_per_meter_cents,markup_basis_points,image_path,active,catalog_source,panel_updated_at,catalog_active)
+        VALUES (@id,@spec_id,@name,@raw_length,@weight,@price,@price,0,NULL,1,'PANEL',@updated_at,1)
+        ON CONFLICT(id) DO UPDATE SET spec_id=excluded.spec_id,name=excluded.name,raw_length_mm=excluded.raw_length_mm,weight_per_meter_kg=excluded.weight_per_meter_kg,purchase_price_per_meter_cents=excluded.purchase_price_per_meter_cents,sale_price_per_meter_cents=ROUND(excluded.purchase_price_per_meter_cents*(10000+profiles.markup_basis_points)/10000.0),active=1,catalog_source='PANEL',panel_updated_at=excluded.panel_updated_at,catalog_active=1,updated_at=CURRENT_TIMESTAMP`);
       for (const row of profiles) {
         const spec = profileSpec(row);
         const specId = `panel-spec-${row.id}`;
@@ -145,13 +145,13 @@ export async function syncPanelConnectors(db: Database.Database, fetchImpl: type
         upsertProfile.run({ id: row.id, spec_id: specId, name: row.name, raw_length: Math.round(Number(row.stock_length_mm || 6000)), weight: Number(row.weight_per_meter || 0), price: Math.round(Number(row.effective_price_per_meter ?? row.price_per_meter ?? 0) * 100), updated_at: row.updated_at || null });
       }
       db.prepare("UPDATE complementary_products SET catalog_active=0 WHERE catalog_source='PANEL'").run();
-      const upsertComplement = db.prepare(`INSERT INTO complementary_products (id,name,sku_optional,description,unit_type,purchase_unit_price_cents,sale_unit_price_cents,image_path,notes,active,catalog_source,panel_updated_at,catalog_active)
-        VALUES (@id,@name,@sku,@description,@unit,@price,@price,@image,@notes,1,'PANEL',@updated_at,1)
-        ON CONFLICT(id) DO UPDATE SET name=excluded.name,sku_optional=excluded.sku_optional,description=excluded.description,unit_type=excluded.unit_type,purchase_unit_price_cents=excluded.purchase_unit_price_cents,image_path=COALESCE(complementary_products.image_path,excluded.image_path),notes=excluded.notes,active=1,catalog_source='PANEL',panel_updated_at=excluded.panel_updated_at,catalog_active=1,updated_at=CURRENT_TIMESTAMP`);
+      const upsertComplement = db.prepare(`INSERT INTO complementary_products (id,name,sku_optional,description,unit_type,purchase_unit_price_cents,sale_unit_price_cents,markup_basis_points,weight_per_unit_grams,image_path,notes,active,catalog_source,panel_updated_at,catalog_active)
+        VALUES (@id,@name,@sku,@description,@unit,@price,@price,0,@weight,@image,@notes,1,'PANEL',@updated_at,1)
+        ON CONFLICT(id) DO UPDATE SET name=excluded.name,sku_optional=excluded.sku_optional,description=excluded.description,unit_type=excluded.unit_type,purchase_unit_price_cents=excluded.purchase_unit_price_cents,sale_unit_price_cents=ROUND(excluded.purchase_unit_price_cents*(10000+complementary_products.markup_basis_points)/10000.0),weight_per_unit_grams=COALESCE(excluded.weight_per_unit_grams,complementary_products.weight_per_unit_grams),image_path=COALESCE(complementary_products.image_path,excluded.image_path),notes=excluded.notes,active=1,catalog_source='PANEL',panel_updated_at=excluded.panel_updated_at,catalog_active=1,updated_at=CURRENT_TIMESTAMP`);
       for (const row of complements) {
         const unitText = String(row.unit || "adet").toLocaleLowerCase("tr");
         const unit = unitText.includes("m²") || unitText.includes("m2") ? "M2" : unitText.includes("metre") || unitText === "m" ? "METER" : "PIECE";
-        upsertComplement.run({ id: row.id, name: row.name, sku: row.supplier_reference || null, description: row.description || row.category || null, unit, price: Math.round(Number(row.purchase_price || 0) * 100), image: row.image || null, notes: row.notes || null, updated_at: row.updated_at || null });
+        upsertComplement.run({ id: row.id, name: row.name, sku: row.supplier_reference || null, description: row.description || row.category || null, unit, price: Math.round(Number(row.purchase_price || 0) * 100), weight: Number(row.weight_per_unit_grams || 0) || (Number(row.unit_weight_kg || 0) * 1000) || null, image: row.image || null, notes: row.notes || null, updated_at: row.updated_at || null });
       }
       setting(db, "panel_profile_count", String(profiles.length)); setting(db, "panel_complement_count", String(complements.length));
       setting(db, "panel_reachable", "true"); setting(db, "panel_last_synced_at", syncedAt); setting(db, "panel_last_error", "");

@@ -28,16 +28,16 @@ test("complementary product upload rejects invalid image contents", async () => 
   assert.deepEqual(await response.json(), { error: "INVALID_IMAGE" });
 });
 
-test("catalog creates and edits profiles and complementary products with independent purchase and sale prices", async () => {
+test("catalog derives profile and complementary sale prices from purchase and markup", async () => {
   const headers = { "content-type": "application/json" };
-  const profileResponse = await fetch(`${baseUrl}/api/profiles`, { method: "POST", headers, body: JSON.stringify({ name: "PCI 25 Profil", shape: "SQUARE", material: "PREMIUM_CAST_IRON", width_mm: 25, height_mm: 25, wall_thickness_mm: 2.5, compatibility_group: "SQ-25X25", raw_length_mm: 6000, weight_per_meter_kg: 1.2, purchase_price_per_meter_cents: 10000, sale_price_per_meter_cents: 16000 }) });
+  const profileResponse = await fetch(`${baseUrl}/api/profiles`, { method: "POST", headers, body: JSON.stringify({ name: "PCI 25 Profil", shape: "SQUARE", material: "PREMIUM_CAST_IRON", width_mm: 25, height_mm: 25, wall_thickness_mm: 2.5, compatibility_group: "SQ-25X25", raw_length_mm: 6000, weight_per_meter_kg: 1.2, purchase_price_per_meter_cents: 10000, markup_basis_points: 6000 }) });
   assert.equal(profileResponse.status, 201); const profile = await profileResponse.json() as any;
-  const editedProfile = await fetch(`${baseUrl}/api/profiles/${profile.id}`, { method: "PUT", headers, body: JSON.stringify({ name: "PCI 25 Profil", shape: "SQUARE", material: "PREMIUM_CAST_IRON", width_mm: 25, height_mm: 25, wall_thickness_mm: 3, compatibility_group: "SQ-25X25", raw_length_mm: 6000, weight_per_meter_kg: 1.3, purchase_price_per_meter_cents: 11000, sale_price_per_meter_cents: 18000 }) });
+  const editedProfile = await fetch(`${baseUrl}/api/profiles/${profile.id}`, { method: "PUT", headers, body: JSON.stringify({ name: "PCI 25 Profil", shape: "SQUARE", material: "PREMIUM_CAST_IRON", width_mm: 25, height_mm: 25, wall_thickness_mm: 3, compatibility_group: "SQ-25X25", raw_length_mm: 6000, weight_per_meter_kg: 1.3, purchase_price_per_meter_cents: 11000, markup_basis_points: 5000 }) });
   assert.equal(editedProfile.status, 200); assert.equal((await editedProfile.json() as any).wall_thickness_mm, 3);
-  const complementResponse = await fetch(`${baseUrl}/api/complementary-products`, { method: "POST", headers, body: JSON.stringify({ name: "Özel Tabla", unit_type: "M2", purchase_unit_price_cents: 20000, sale_unit_price_cents: 32000 }) });
+  const complementResponse = await fetch(`${baseUrl}/api/complementary-products`, { method: "POST", headers, body: JSON.stringify({ name: "Özel Tabla", unit_type: "M2", purchase_unit_price_cents: 20000, markup_basis_points: 6000, weight_per_unit_grams: 350 }) });
   assert.equal(complementResponse.status, 201); const complement = await complementResponse.json() as any;
-  const editedComplement = await fetch(`${baseUrl}/api/complementary-products/${complement.id}`, { method: "PUT", headers, body: JSON.stringify({ name: "Özel Tabla", unit_type: "M2", purchase_unit_price_cents: 21000, sale_unit_price_cents: 35000 }) });
-  assert.equal(editedComplement.status, 200); assert.equal((await editedComplement.json() as any).sale_unit_price_cents, 35000);
+  const editedComplement = await fetch(`${baseUrl}/api/complementary-products/${complement.id}`, { method: "PUT", headers, body: JSON.stringify({ name: "Özel Tabla", unit_type: "M2", purchase_unit_price_cents: 21000, markup_basis_points: 5000, weight_per_unit_grams: 375 }) });
+  assert.equal(editedComplement.status, 200); const edited = await editedComplement.json() as any; assert.equal(edited.sale_unit_price_cents, 31500); assert.equal(edited.weight_per_unit_grams, 375);
 });
 
 test("profile and kit accept multiple validated images", async () => {

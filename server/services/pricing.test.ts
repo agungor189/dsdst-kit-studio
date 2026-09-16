@@ -46,3 +46,36 @@ test("kit profile cost uses consumed meters while retaining raw-bar optimization
   assert.equal(result.profiles.total_millimeters, 2000);
   assert.equal(result.profiles.weight_grams, 2000);
 });
+
+test("automatic component pricing includes extras, VAT and all known weights", () => {
+  const result = calculatePricing({
+    connectors: [{ quantity: 4, purchase_price_snapshot_cents: 10_000, sale_price_snapshot_cents: 16_000, unit_weight_snapshot_grams: 525, sku_snapshot: "AL-R100-ELB" }],
+    profile: { purchase_price_snapshot_cents: 10_000, markup_basis_points_snapshot: 4_000, weight_per_meter_snapshot_kg: 3.825 / 3.5, current_name: "Profil" },
+    cuts: [{ quantity: 1, length_mm: 3_500 }],
+    complementary: [{ quantity_milli: 2_500, purchase_price_snapshot_cents: 8_000, markup_basis_points_snapshot: 5_000, weight_per_unit_snapshot_grams: 560, product_name_snapshot: "Kumaş" }],
+    laborCostCents: 4_000, packagingCostCents: 3_000, otherCostCents: 3_000, vatRateBasisPoints: 2_000,
+  });
+  assert.equal(result.component_cost_cents, 95_000);
+  assert.equal(result.total_cost_cents, 105_000);
+  assert.equal(result.subtotal_ex_vat_cents, 143_000);
+  assert.equal(result.profit_cents, 38_000);
+  assert.equal(result.margin_basis_points, Math.round(380 / 1430 * 10_000));
+  assert.equal(result.vat_cents, 28_600);
+  assert.equal(result.total_inc_vat_cents, 171_600);
+  assert.equal(result.connector_weight_grams, 2_100);
+  assert.equal(result.profile_weight_grams, 3_825);
+  assert.equal(result.complementary_weight_grams, 1_400);
+  assert.equal(result.total_weight_grams, 7_325);
+  assert.equal(result.weight_complete, true);
+});
+
+test("missing product weights keep the known total and mark it incomplete", () => {
+  const result = calculatePricing({
+    connectors: [{ quantity: 2, purchase_price_snapshot_cents: 100, sale_price_snapshot_cents: 150, unit_weight_snapshot_grams: null, sku_snapshot: "UNKNOWN" }],
+    profile: { purchase_price_snapshot_cents: 100, markup_basis_points_snapshot: 0, weight_per_meter_snapshot_kg: 1 },
+    cuts: [{ quantity: 1, length_mm: 1_000 }], complementary: [], vatRateBasisPoints: 2_000,
+  });
+  assert.equal(result.total_weight_grams, 1_000);
+  assert.equal(result.weight_complete, false);
+  assert.deepEqual(result.missing_weight_items.map((item) => item.name), ["UNKNOWN"]);
+});

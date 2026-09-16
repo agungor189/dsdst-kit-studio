@@ -17,7 +17,7 @@ test("sync persists resolved and unresolved Panel products with status counts", 
       : url.endsWith("/complementary-products")
         ? [{ id: "panel-comp-1", name: "Panel Kapak", unit: "adet", purchase_price: 12 }]
         : [
-            { id: "real-1", sku: "AL-X-ELB", name_tr: "Dirsek", form_code: "ELB", tube_type_code: "SQ", normalized_pipe_size: "40x40", sale_price: 10 },
+            { id: "real-1", sku: "AL-X-ELB", name_tr: "Dirsek", form_code: "ELB", tube_type_code: "SQ", normalized_pipe_size: "40x40", sale_price: 10, weight_grams: 325 },
             { id: "real-2", sku: "UNKNOWN", name_tr: "Bekleyen", sale_price: 5 },
           ];
     return new Response(JSON.stringify({ success: true, data }), { status: 200, headers: { "content-type": "application/json" } });
@@ -31,6 +31,7 @@ test("sync persists resolved and unresolved Panel products with status counts", 
   assert.equal((db.prepare("SELECT purchase_unit_price_cents FROM complementary_products WHERE id='panel-comp-1'").get() as any).purchase_unit_price_cents, 1200);
   assert.equal((db.prepare("SELECT compatibility_group FROM connector_compatibility WHERE product_id='real-1'").get() as any).compatibility_group, "SQ-40X40");
   assert.equal((db.prepare("SELECT sale_price_cents FROM panel_connector_cache WHERE product_id='real-1'").get() as any).sale_price_cents, 1000);
+  assert.equal((db.prepare("SELECT unit_weight_grams FROM panel_connector_cache WHERE product_id='real-1'").get() as any).unit_weight_grams, 325);
 });
 
 test("a failed refresh keeps the last cache and marks Panel unreachable", async () => {

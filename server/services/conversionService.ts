@@ -11,16 +11,12 @@ function targetProfile(db: Database.Database, profileId: string) {
     WHERE p.id=? AND p.active=1 AND COALESCE(p.catalog_active,1)=1`).get(profileId) as any;
 }
 
-function summary(pricing: any, source: any) {
-  const extras = Number(source.labor_cost_cents || 0) + Number(source.packaging_cost_cents || 0) + Number(source.other_cost_cents || 0);
-  const totalCost = pricing.total_cost_cents + extras;
-  const sale = Number(source.sale_price_cents || 0);
-  const profit = sale - totalCost;
+function summary(pricing: any) {
   return {
-    product_cost_cents: pricing.total_cost_cents, extra_cost_cents: extras, total_cost_cents: totalCost,
-    sale_price_cents: sale, profit_cents: profit, net_profit_cents: profit,
-    margin_percent: sale ? (profit / sale) * 100 : 0,
-    total_weight_grams: pricing.profiles.weight_grams,
+    product_cost_cents: pricing.component_cost_cents, extra_cost_cents: pricing.extra_cost_cents, total_cost_cents: pricing.total_cost_cents,
+    sale_price_cents: pricing.total_inc_vat_cents, subtotal_ex_vat_cents: pricing.subtotal_ex_vat_cents, vat_cents: pricing.vat_cents,
+    profit_cents: pricing.profit_cents, margin_percent: pricing.margin_percent,
+    total_weight_grams: pricing.total_weight_grams, weight_complete: pricing.weight_complete,
   };
 }
 
@@ -39,18 +35,22 @@ export function previewVariantConversion(db: Database.Database, sourceVariantId:
     quantity: line.quantity,
     purchase_price_snapshot_cents: line.connector.purchase_cost_cents,
     sale_price_snapshot_cents: line.connector.sale_price_cents,
+    unit_weight_snapshot_grams: line.connector.unit_weight_grams,
+    product_id: line.connector.product_id, sku_snapshot: line.connector.sku, product_name_snapshot: line.connector.name_tr,
   }));
   const pricing = calculatePricing({
     connectors,
     profile: {
       purchase_price_snapshot_cents: profile.purchase_price_per_meter_cents,
       sale_price_snapshot_cents: profile.sale_price_per_meter_cents,
+      markup_basis_points_snapshot: profile.markup_basis_points,
       weight_per_meter_snapshot_kg: profile.weight_per_meter_kg,
-      raw_length_mm: profile.raw_length_mm,
+      raw_length_mm: profile.raw_length_mm, profile_id: profile.id, current_name: profile.name,
     },
     cuts: source.cuts,
     complementary: source.complementary_items,
     vatRateBasisPoints: Number((db.prepare("SELECT value FROM app_settings WHERE key='vat_rate_basis_points'").get() as any)?.value || 2000),
+    laborCostCents: Number(source.labor_cost_cents || 0), packagingCostCents: Number(source.packaging_cost_cents || 0), otherCostCents: Number(source.other_cost_cents || 0),
   });
   const status = missingRoles.length === 0 ? "FULL" : resolvedCount > 0 ? "PARTIAL" : "INCOMPATIBLE";
   return {
@@ -59,7 +59,7 @@ export function previewVariantConversion(db: Database.Database, sourceVariantId:
     target: {
       profile: { id: profile.id, name: profile.name, shape: profile.shape, material: profile.material, compatibility_group: profile.compatibility_group, wall_thickness_mm: profile.wall_thickness_mm, nominal_size: profile.nominal_size, width_mm: profile.width_mm, height_mm: profile.height_mm, outside_diameter_mm: profile.outside_diameter_mm },
       connectors: mapped.map((line: any) => ({ role: line.role, quantity: line.quantity, product_id: line.connector?.product_id || null, sku: line.connector?.sku || null })),
-      pricing, summary: summary(pricing, source),
+      pricing, summary: summary(pricing),
     },
   };
 }
@@ -89,18 +89,19 @@ export function deriveKit(db: Database.Database, sourceVariantId: string, target
       SELECT ?,?,?,description,'DRAFT',sale_price_cents,labor_cost_cents,packaging_cost_cents,other_cost_cents,id FROM kits WHERE id=?`)
       .run(kitId, input.name, input.sku || null, source.kit_id);
     db.prepare("INSERT INTO kit_variants (id,kit_id,name,profile_id,status) VALUES (?,?,?,?, 'DRAFT')").run(variantId, kitId, profile.name, profile.id);
-    const insertConnector = db.prepare(`INSERT INTO kit_variant_connectors (id,variant_id,connector_role,product_id,quantity,purchase_price_snapshot_cents,sale_price_snapshot_cents,product_name_snapshot,sku_snapshot) VALUES (?,?,?,?,?,?,?,?,?)`);
+    const insertConnector = db.prepare(`INSERT INTO kit_variant_connectors (id,variant_id,connector_role,product_id,quantity,purchase_price_snapshot_cents,sale_price_snapshot_cents,unit_weight_snapshot_grams,product_name_snapshot,sku_snapshot) VALUES (?,?,?,?,?,?,?,?,?,?)`);
     for (const line of preview.target.connectors) {
       const connector = resolveConnector(db, line.role, profile.id) as any;
-      insertConnector.run(crypto.randomUUID(), variantId, line.role, connector.product_id, line.quantity, connector.purchase_cost_cents, connector.sale_price_cents, connector.name_tr, connector.sku);
+      insertConnector.run(crypto.randomUUID(), variantId, line.role, connector.product_id, line.quantity, connector.purchase_cost_cents, connector.sale_price_cents, connector.unit_weight_grams, connector.name_tr, connector.sku);
     }
     const profileLineId = crypto.randomUUID();
-    db.prepare("INSERT INTO kit_variant_profiles (id,variant_id,profile_id,purchase_price_snapshot_cents,sale_price_snapshot_cents,weight_per_meter_snapshot_kg) VALUES (?,?,?,?,?,?)")
-      .run(profileLineId, variantId, profile.id, profile.purchase_price_per_meter_cents, profile.sale_price_per_meter_cents, profile.weight_per_meter_kg);
+    db.prepare("INSERT INTO kit_variant_profiles (id,variant_id,profile_id,purchase_price_snapshot_cents,sale_price_snapshot_cents,markup_basis_points_snapshot,weight_per_meter_snapshot_kg) VALUES (?,?,?,?,?,?,?)")
+      .run(profileLineId, variantId, profile.id, profile.purchase_price_per_meter_cents, profile.sale_price_per_meter_cents, profile.markup_basis_points, profile.weight_per_meter_kg);
     const insertCut = db.prepare("INSERT INTO kit_variant_profile_cuts (id,variant_profile_id,quantity,length_mm,label) VALUES (?,?,?,?,?)");
     for (const cut of source.cuts) insertCut.run(crypto.randomUUID(), profileLineId, cut.quantity, cut.length_mm, cut.label ?? null);
-    const insertComplement = db.prepare(`INSERT INTO kit_variant_complementary_items (id,variant_id,complementary_product_id,quantity_milli,purchase_price_snapshot_cents,sale_price_snapshot_cents,product_name_snapshot,unit_type_snapshot) VALUES (?,?,?,?,?,?,?,?)`);
-    for (const line of source.complementary_items) insertComplement.run(crypto.randomUUID(), variantId, line.complementary_product_id, line.quantity_milli, line.purchase_price_snapshot_cents, line.sale_price_snapshot_cents, line.product_name_snapshot, line.unit_type_snapshot);
+    const insertComplement = db.prepare(`INSERT INTO kit_variant_complementary_items (id,variant_id,complementary_product_id,quantity_milli,purchase_price_snapshot_cents,sale_price_snapshot_cents,markup_basis_points_snapshot,weight_per_unit_snapshot_grams,product_name_snapshot,unit_type_snapshot) VALUES (?,?,?,?,?,?,?,?,?,?)`);
+    for (const line of source.complementary_items) insertComplement.run(crypto.randomUUID(), variantId, line.complementary_product_id, line.quantity_milli, line.purchase_price_snapshot_cents, line.sale_price_snapshot_cents, line.markup_basis_points_snapshot, line.weight_per_unit_snapshot_grams, line.product_name_snapshot, line.unit_type_snapshot);
   })();
+  db.prepare("UPDATE kits SET sale_price_cents=? WHERE id=?").run(preview.target.pricing.total_inc_vat_cents, kitId);
   return { kitId, variantId };
 }

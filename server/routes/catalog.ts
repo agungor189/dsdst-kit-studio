@@ -6,6 +6,7 @@ import express from "express";
 import multer from "multer";
 import { z } from "zod";
 import { fetchPanelProductImage, getPanelSyncStats, syncPanelConnectors } from "../services/panelClient.js";
+import { priceWithMarkup } from "../services/pricing.js";
 
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 5 * 1024 * 1024, files: 1 } });
 const money = z.number().int().nonnegative();
@@ -13,10 +14,16 @@ const profileInput = z.object({
   name: z.string().min(2), shape: z.enum(["SQUARE", "ROUND", "RECTANGULAR"]), material: z.string().min(2),
   width_mm: z.number().positive().optional(), height_mm: z.number().positive().optional(), outside_diameter_mm: z.number().positive().optional(), nominal_size: z.string().optional(),
   wall_thickness_mm: z.number().nonnegative(), compatibility_group: z.string().min(2), raw_length_mm: z.number().int().positive().default(6000),
-  weight_per_meter_kg: z.number().nonnegative(), purchase_price_per_meter_cents: money, sale_price_per_meter_cents: money,
+  weight_per_meter_kg: z.number().nonnegative(), purchase_price_per_meter_cents: money, markup_basis_points: z.number().int().nonnegative().optional(),
+  sale_price_per_meter_cents: money.optional(),
   supplier_id: z.string().optional().nullable(), notes: z.string().optional(),
 }).refine((data) => data.shape === "ROUND" ? Boolean(data.outside_diameter_mm) : Boolean(data.width_mm && data.height_mm), "Profile dimensions do not match shape");
-const complementInput = z.object({ name: z.string().min(2), sku_optional: z.string().optional(), description: z.string().optional(), unit_type: z.enum(["PIECE", "METER", "M2"]), purchase_unit_price_cents: money, sale_unit_price_cents: money, supplier_id: z.string().optional().nullable(), website_url_optional: z.string().url().optional().or(z.literal("")), notes: z.string().optional() });
+const complementInput = z.object({ name: z.string().min(2), sku_optional: z.string().optional(), description: z.string().optional(), unit_type: z.enum(["PIECE", "METER", "M2"]), purchase_unit_price_cents: money, markup_basis_points: z.number().int().nonnegative().optional(), weight_per_unit_grams: z.number().positive().nullable().optional(), sale_unit_price_cents: money.optional(), supplier_id: z.string().optional().nullable(), website_url_optional: z.string().url().optional().or(z.literal("")), notes: z.string().optional() });
+
+function catalogMarkup(purchase: number, markup?: number, legacySale?: number) {
+  if (markup != null) return markup;
+  return purchase > 0 && legacySale != null ? Math.max(0, Math.round((legacySale / purchase - 1) * 10_000)) : 0;
+}
 
 function profileRows(db: Database.Database) {
   return db.prepare(`SELECT p.*, ps.shape, ps.material, ps.width_mm, ps.height_mm, ps.outside_diameter_mm,
@@ -83,26 +90,30 @@ export function createCatalogRouter(db: Database.Database) {
   router.get("/profiles", (_req, res) => res.json(profileRows(db)));
   router.post("/profiles", (req, res) => {
     const parsed = profileInput.parse(req.body);
+    const markup = catalogMarkup(parsed.purchase_price_per_meter_cents, parsed.markup_basis_points, parsed.sale_price_per_meter_cents);
+    const sale = priceWithMarkup(parsed.purchase_price_per_meter_cents, markup);
     const specId = crypto.randomUUID(); const id = crypto.randomUUID();
     db.transaction(() => {
       db.prepare("INSERT INTO profile_specs (id,shape,material,width_mm,height_mm,outside_diameter_mm,nominal_size,wall_thickness_mm,compatibility_group,size_compatibility_group) VALUES (?,?,?,?,?,?,?,?,?,?)")
         .run(specId, parsed.shape, parsed.material, parsed.width_mm ?? null, parsed.height_mm ?? null, parsed.outside_diameter_mm ?? null, parsed.nominal_size ?? null, parsed.wall_thickness_mm, `${parsed.compatibility_group}|${specId}`, parsed.compatibility_group);
-      db.prepare("INSERT INTO profiles (id,spec_id,name,raw_length_mm,weight_per_meter_kg,purchase_price_per_meter_cents,sale_price_per_meter_cents,supplier_id,notes) VALUES (?,?,?,?,?,?,?,?,?)")
-        .run(id, specId, parsed.name, parsed.raw_length_mm, parsed.weight_per_meter_kg, parsed.purchase_price_per_meter_cents, parsed.sale_price_per_meter_cents, parsed.supplier_id ?? null, parsed.notes ?? null);
+      db.prepare("INSERT INTO profiles (id,spec_id,name,raw_length_mm,weight_per_meter_kg,purchase_price_per_meter_cents,sale_price_per_meter_cents,markup_basis_points,supplier_id,notes) VALUES (?,?,?,?,?,?,?,?,?,?)")
+        .run(id, specId, parsed.name, parsed.raw_length_mm, parsed.weight_per_meter_kg, parsed.purchase_price_per_meter_cents, sale, markup, parsed.supplier_id ?? null, parsed.notes ?? null);
     })();
     res.status(201).json(profileRows(db).find((row: any) => row.id === id));
   });
 
   router.put("/profiles/:id", (req, res) => {
     const parsed = profileInput.parse(req.body);
+    const markup = catalogMarkup(parsed.purchase_price_per_meter_cents, parsed.markup_basis_points, parsed.sale_price_per_meter_cents);
+    const sale = priceWithMarkup(parsed.purchase_price_per_meter_cents, markup);
     const current = db.prepare("SELECT spec_id FROM profiles WHERE id=? AND active=1").get(req.params.id) as { spec_id: string } | undefined;
     if (!current) return res.status(404).json({ error: "NOT_FOUND" });
     try {
       db.transaction(() => {
         db.prepare(`UPDATE profile_specs SET shape=?,material=?,width_mm=?,height_mm=?,outside_diameter_mm=?,nominal_size=?,wall_thickness_mm=?,compatibility_group=?,size_compatibility_group=? WHERE id=?`)
           .run(parsed.shape, parsed.material, parsed.width_mm ?? null, parsed.height_mm ?? null, parsed.outside_diameter_mm ?? null, parsed.nominal_size ?? null, parsed.wall_thickness_mm, `${parsed.compatibility_group}|${current.spec_id}`, parsed.compatibility_group, current.spec_id);
-        db.prepare(`UPDATE profiles SET name=?,raw_length_mm=?,weight_per_meter_kg=?,purchase_price_per_meter_cents=?,sale_price_per_meter_cents=?,supplier_id=?,notes=?,updated_at=CURRENT_TIMESTAMP WHERE id=?`)
-          .run(parsed.name, parsed.raw_length_mm, parsed.weight_per_meter_kg, parsed.purchase_price_per_meter_cents, parsed.sale_price_per_meter_cents, parsed.supplier_id || null, parsed.notes || null, req.params.id);
+        db.prepare(`UPDATE profiles SET name=?,raw_length_mm=?,weight_per_meter_kg=?,purchase_price_per_meter_cents=?,sale_price_per_meter_cents=?,markup_basis_points=?,supplier_id=?,notes=?,updated_at=CURRENT_TIMESTAMP WHERE id=?`)
+          .run(parsed.name, parsed.raw_length_mm, parsed.weight_per_meter_kg, parsed.purchase_price_per_meter_cents, sale, markup, parsed.supplier_id || null, parsed.notes || null, req.params.id);
       })();
     } catch (error: any) {
       if (String(error?.code).includes("SQLITE_CONSTRAINT_UNIQUE")) return res.status(409).json({ error: "DUPLICATE_COMPATIBILITY_GROUP" });
@@ -114,19 +125,23 @@ export function createCatalogRouter(db: Database.Database) {
   router.get("/complementary-products", (_req, res) => res.json(db.prepare("SELECT * FROM complementary_products WHERE COALESCE(catalog_active,1)=1 ORDER BY active DESC,name").all()));
   router.post("/complementary-products", (req, res) => {
     const parsed = complementInput.parse(req.body);
+    const markup = catalogMarkup(parsed.purchase_unit_price_cents, parsed.markup_basis_points, parsed.sale_unit_price_cents);
+    const sale = priceWithMarkup(parsed.purchase_unit_price_cents, markup);
     const id = crypto.randomUUID();
-    db.prepare(`INSERT INTO complementary_products (id,name,sku_optional,description,unit_type,purchase_unit_price_cents,sale_unit_price_cents,supplier_id,website_url_optional,notes)
-      VALUES (@id,@name,@sku_optional,@description,@unit_type,@purchase_unit_price_cents,@sale_unit_price_cents,@supplier_id,@website_url_optional,@notes)`)
-      .run({ id, sku_optional: null, description: null, supplier_id: null, website_url_optional: null, notes: null, ...parsed });
+    db.prepare(`INSERT INTO complementary_products (id,name,sku_optional,description,unit_type,purchase_unit_price_cents,sale_unit_price_cents,markup_basis_points,weight_per_unit_grams,supplier_id,website_url_optional,notes)
+      VALUES (@id,@name,@sku_optional,@description,@unit_type,@purchase_unit_price_cents,@sale,@markup_basis_points,@weight_per_unit_grams,@supplier_id,@website_url_optional,@notes)`)
+      .run({ id, sale, markup_basis_points: markup, sku_optional: null, description: null, weight_per_unit_grams: null, supplier_id: null, website_url_optional: null, notes: null, ...parsed });
     res.status(201).json(db.prepare("SELECT * FROM complementary_products WHERE id=?").get(id));
   });
 
   router.put("/complementary-products/:id", (req, res) => {
     const parsed = complementInput.parse(req.body);
+    const markup = catalogMarkup(parsed.purchase_unit_price_cents, parsed.markup_basis_points, parsed.sale_unit_price_cents);
+    const sale = priceWithMarkup(parsed.purchase_unit_price_cents, markup);
     const result = db.prepare(`UPDATE complementary_products SET name=@name,sku_optional=@sku_optional,description=@description,unit_type=@unit_type,
-      purchase_unit_price_cents=@purchase_unit_price_cents,sale_unit_price_cents=@sale_unit_price_cents,supplier_id=@supplier_id,
+      purchase_unit_price_cents=@purchase_unit_price_cents,sale_unit_price_cents=@sale,markup_basis_points=@markup_basis_points,weight_per_unit_grams=@weight_per_unit_grams,supplier_id=@supplier_id,
       website_url_optional=@website_url_optional,notes=@notes,updated_at=CURRENT_TIMESTAMP WHERE id=@id AND active=1`)
-      .run({ id: req.params.id, sku_optional: null, description: null, supplier_id: null, website_url_optional: null, notes: null, ...parsed });
+      .run({ id: req.params.id, sale, markup_basis_points: markup, sku_optional: null, description: null, weight_per_unit_grams: null, supplier_id: null, website_url_optional: null, notes: null, ...parsed });
     return result.changes ? res.json(db.prepare("SELECT * FROM complementary_products WHERE id=?").get(req.params.id)) : res.status(404).json({ error: "NOT_FOUND" });
   });
 

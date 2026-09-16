@@ -10,40 +10,34 @@ export function variantDetail(db: Database.Database, variantId: string) {
   variant.missing_mappings = JSON.parse(variant.missing_mappings_json || "[]");
   variant.compatibility_warnings = JSON.parse(variant.compatibility_warnings_json || "[]");
   variant.connectors = db.prepare(`SELECT line.*,cache.image current_image,cache.central_stock current_stock,cache.name_tr current_name,cache.sku current_sku,
-    cache.purchase_cost_cents current_purchase_cost_cents,cache.catalog_active
+    cache.purchase_cost_cents current_purchase_cost_cents,cache.unit_weight_grams current_unit_weight_grams,cache.catalog_active
     FROM kit_variant_connectors line LEFT JOIN panel_connector_cache cache ON cache.product_id=line.product_id
     WHERE line.variant_id=? ORDER BY line.connector_role`).all(variantId);
-  variant.profile = db.prepare(`SELECT line.*,p.name current_name,p.image_path current_image,p.purchase_price_per_meter_cents current_purchase_price_cents,
+  variant.profile = db.prepare(`SELECT line.*,p.name current_name,p.image_path current_image,p.purchase_price_per_meter_cents current_purchase_price_cents,p.markup_basis_points current_markup_basis_points,
     p.raw_length_mm,p.catalog_active,COALESCE(ps.size_compatibility_group,ps.compatibility_group) compatibility_group,ps.shape
     FROM kit_variant_profiles line JOIN profiles p ON p.id=line.profile_id JOIN profile_specs ps ON ps.id=p.spec_id
     WHERE line.variant_id=?`).get(variantId) as any;
   variant.cuts = variant.profile ? db.prepare("SELECT * FROM kit_variant_profile_cuts WHERE variant_profile_id=? ORDER BY length_mm DESC").all(variant.profile.id) : [];
   variant.complementary_items = db.prepare(`SELECT line.*,product.image_path current_image,product.name current_name,product.catalog_source,product.catalog_active,
-    product.purchase_unit_price_cents current_purchase_price_cents
+    product.purchase_unit_price_cents current_purchase_price_cents,product.markup_basis_points current_markup_basis_points,product.weight_per_unit_grams current_weight_per_unit_grams
     FROM kit_variant_complementary_items line LEFT JOIN complementary_products product ON product.id=line.complementary_product_id
     WHERE line.variant_id=? ORDER BY line.product_name_snapshot`).all(variantId);
   variant.pricing = priceVariant(db, variant);
-  const extras = Number(variant.labor_cost_cents || 0) + Number(variant.packaging_cost_cents || 0) + Number(variant.other_cost_cents || 0);
-  const vatRate = Number(variant.pricing.vat_rate_basis_points || 0);
-  const saleIncVat = Number(variant.sale_price_cents || 0);
-  const outputVat = vatRate ? Math.round((saleIncVat * vatRate) / (10_000 + vatRate)) : 0;
-  const totalCost = variant.pricing.total_cost_cents + extras;
-  const profit = saleIncVat - totalCost;
   variant.configuration = {
     material: variant.material, shape: variant.shape, compatibility_group: variant.compatibility_group,
     wall_thickness_mm: variant.wall_thickness_mm, size: variant.nominal_size || (variant.shape === "ROUND" ? `Ø${variant.outside_diameter_mm}` : `${variant.width_mm}×${variant.height_mm}`),
   };
   variant.summary = {
-    product_cost_cents: variant.pricing.total_cost_cents,
-    extra_cost_cents: extras,
-    total_cost_cents: totalCost,
-    sale_price_cents: saleIncVat,
-    net_revenue_cents: saleIncVat,
-    output_vat_cents: outputVat,
-    gross_profit_cents: profit,
-    profit_cents: profit,
-    net_profit_cents: profit,
-    margin_percent: saleIncVat > 0 ? (profit / saleIncVat) * 100 : 0,
+    product_cost_cents: variant.pricing.component_cost_cents,
+    extra_cost_cents: variant.pricing.extra_cost_cents,
+    total_cost_cents: variant.pricing.total_cost_cents,
+    sale_price_cents: variant.pricing.total_inc_vat_cents,
+    subtotal_ex_vat_cents: variant.pricing.subtotal_ex_vat_cents,
+    vat_cents: variant.pricing.vat_cents,
+    profit_cents: variant.pricing.profit_cents,
+    margin_percent: variant.pricing.margin_percent,
+    total_weight_grams: variant.pricing.total_weight_grams,
+    weight_complete: variant.pricing.weight_complete,
   };
   return variant;
 }
@@ -52,7 +46,21 @@ export function priceVariant(db: Database.Database, preloaded: any) {
   const variant = preloaded?.connectors ? preloaded : variantDetail(db, String(preloaded));
   if (!variant) throw new Error("Variant not found");
   const vatRate = Number((db.prepare("SELECT value FROM app_settings WHERE key='vat_rate_basis_points'").get() as any)?.value || 2000);
-  return calculatePricing({ connectors: variant.connectors, profile: variant.profile || null, cuts: variant.cuts, complementary: variant.complementary_items, vatRateBasisPoints: vatRate });
+  return calculatePricing({
+    connectors: variant.connectors, profile: variant.profile || null, cuts: variant.cuts, complementary: variant.complementary_items,
+    vatRateBasisPoints: vatRate, laborCostCents: Number(variant.labor_cost_cents || 0), packagingCostCents: Number(variant.packaging_cost_cents || 0), otherCostCents: Number(variant.other_cost_cents || 0),
+  });
+}
+
+export function quoteCatalogSelection(db: Database.Database, input: { profile_id: string; connectors: { product_id: string; quantity: number }[]; cuts: { quantity: number; length_mm: number }[]; complementary_items: { product_id: string; quantity: number }[]; labor_cost_cents?: number; packaging_cost_cents?: number; other_cost_cents?: number }) {
+  const profile = db.prepare("SELECT id profile_id,name current_name,raw_length_mm,weight_per_meter_kg weight_per_meter_snapshot_kg,purchase_price_per_meter_cents purchase_price_snapshot_cents,markup_basis_points markup_basis_points_snapshot FROM profiles WHERE id=? AND active=1 AND COALESCE(catalog_active,1)=1").get(input.profile_id) as any;
+  if (!profile) throw new Error("INVALID_PROFILE");
+  const connectorQuery = db.prepare("SELECT product_id,sku sku_snapshot,name_tr product_name_snapshot,purchase_cost_cents purchase_price_snapshot_cents,sale_price_cents sale_price_snapshot_cents,unit_weight_grams unit_weight_snapshot_grams FROM panel_connector_cache WHERE product_id=? AND catalog_active=1");
+  const connectors = input.connectors.map((line) => { const product = connectorQuery.get(line.product_id) as any; if (!product) throw new Error(`INVALID_CONNECTOR:${line.product_id}`); return { ...product, quantity: line.quantity }; });
+  const complementQuery = db.prepare("SELECT id complementary_product_id,name product_name_snapshot,purchase_unit_price_cents purchase_price_snapshot_cents,markup_basis_points markup_basis_points_snapshot,weight_per_unit_grams weight_per_unit_snapshot_grams FROM complementary_products WHERE id=? AND active=1 AND COALESCE(catalog_active,1)=1");
+  const complementary = input.complementary_items.map((line) => { const product = complementQuery.get(line.product_id) as any; if (!product) throw new Error(`INVALID_COMPLEMENTARY:${line.product_id}`); return { ...product, quantity_milli: Math.round(line.quantity * 1000) }; });
+  const vatRate = Number((db.prepare("SELECT value FROM app_settings WHERE key='vat_rate_basis_points'").get() as any)?.value || 2000);
+  return calculatePricing({ connectors, profile, cuts: input.cuts, complementary, vatRateBasisPoints: vatRate, laborCostCents: input.labor_cost_cents, packagingCostCents: input.packaging_cost_cents, otherCostCents: input.other_cost_cents });
 }
 
 export function savePricingSnapshot(db: Database.Database, variantId: string, reason: string) {
