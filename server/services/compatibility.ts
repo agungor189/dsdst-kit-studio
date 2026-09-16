@@ -13,11 +13,18 @@ export type ConnectorCompatibility = {
 };
 
 const sameNumber = (left: number | null, right: number | null) => left == null || right == null || Math.abs(left - right) < 0.001;
+const materialGroup = (value: string) => {
+  const normalized = value.replace(/ı/g, "i").replace(/İ/g, "I").normalize("NFD").replace(/\p{Diacritic}/gu, "").toUpperCase().replace(/[^A-Z0-9]/g, "");
+  if (normalized.includes("ALUMIN") || normalized.includes("ALUMINYUM")) return "ALUMINUM";
+  if (normalized.includes("PASLANMAZ") || normalized.includes("STAINLESS")) return "STAINLESS_STEEL";
+  if (normalized.includes("CELIK") || normalized.includes("STEEL")) return "STEEL";
+  return normalized;
+};
 
 export function isCompatible(connector: ConnectorCompatibility, profile: ProfileCompatibility) {
   if (connector.compatibility_group !== profile.compatibility_group) return false;
   if (connector.profile_shape !== profile.shape) return false;
-  if (connector.compatible_material_group && connector.compatible_material_group !== profile.material.toUpperCase()) return false;
+  if (connector.compatible_material_group && materialGroup(connector.compatible_material_group) !== materialGroup(profile.material)) return false;
   if (!sameNumber(connector.profile_width_mm, profile.width_mm) || !sameNumber(connector.profile_height_mm, profile.height_mm)) return false;
   if (!sameNumber(connector.outside_diameter_mm, profile.outside_diameter_mm)) return false;
   if (connector.nominal_size && profile.nominal_size && connector.nominal_size !== profile.nominal_size) return false;
@@ -41,7 +48,8 @@ export function compatibleConnectorsForProfile(db: Database.Database, profileId:
   if (!profile) return [];
   const rows = db.prepare(`SELECT pc.*, cc.connector_role,cc.profile_shape,cc.profile_width_mm,cc.profile_height_mm,
     cc.outside_diameter_mm,cc.nominal_size,cc.compatible_material_group,cc.wall_min_mm,cc.wall_max_mm,cc.compatibility_group
-    FROM panel_connector_cache pc JOIN connector_compatibility cc ON cc.product_id=pc.product_id WHERE cc.active=1 ORDER BY cc.connector_role,pc.sku`).all() as any[];
+    FROM panel_connector_cache pc JOIN connector_compatibility cc ON cc.product_id=pc.product_id
+    WHERE cc.active=1 AND pc.catalog_active=1 AND pc.compatibility_status='COMPATIBLE' ORDER BY cc.connector_role,pc.sku`).all() as any[];
   return rows.filter((row) => isCompatible(row, profile));
 }
 

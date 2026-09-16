@@ -23,7 +23,7 @@ test("Square connector rejects Round profile", () => {
 test("profile-first filtering only returns the selected compatibility group", () => {
   const rows = compatibleConnectorsForProfile(db, "profile-sq20") as any[];
   assert.ok(rows.length > 0);
-  assert.deepEqual(new Set(rows.map((row) => row.compatibility_group)), new Set(["SQ-20"]));
+  assert.deepEqual(new Set(rows.map((row) => row.compatibility_group)), new Set(["SQ-20X20"]));
 });
 
 test("connector-first filtering only returns compatible profiles", () => {

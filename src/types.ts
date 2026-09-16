@@ -1,4 +1,6 @@
+export type User = { id: string; username: string; role: "admin" | "user" | "readonly"; permissions: string[]; must_change_password: boolean };
 export type Profile = { id: string; name: string; shape: string; material: string; compatibility_group: string; purchase_price_per_meter_cents: number; sale_price_per_meter_cents: number; weight_per_meter_kg: number };
-export type Connector = { product_id: string; sku: string; name_tr: string; connector_role: string; compatibility_group: string; sale_price_cents: number; purchase_cost_cents: number; central_stock: number };
+export type Connector = { product_id: string; sku: string; name_tr: string; connector_role?: string; compatibility_group?: string; profile_shape?: string; compatibility_status: "COMPATIBLE" | "UNRESOLVED"; compatibility_source?: "STRUCTURED" | "SKU_FALLBACK" | "MANUAL"; compatibility_note?: string; sale_price_cents: number; purchase_cost_cents: number; central_stock: number; image?: string; material?: string; size?: string };
 export type Complementary = { id: string; name: string; unit_type: "PIECE" | "METER" | "M2"; purchase_unit_price_cents: number; sale_unit_price_cents: number };
-export type Bootstrap = { profiles: Profile[]; connectors: Connector[]; complementaryProducts: Complementary[]; settings: Record<string, string> };
+export type SyncStats = { lastSyncedAt: string | null; lastAttemptAt: string | null; panelReachable: boolean; lastError: string | null; connectorCount: number; compatibleCount: number; unresolvedCount: number };
+export type Bootstrap = { user: User; profiles: Profile[]; connectors: Connector[]; complementaryProducts: Complementary[]; settings: Record<string, string>; sync: SyncStats };

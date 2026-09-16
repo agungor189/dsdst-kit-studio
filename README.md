@@ -7,10 +7,10 @@ DSDST Kit Studio; Panel ürün masterını değiştirmeden bağlantı elemanı, 
 - React + TypeScript + Vite: desktop-first Kit Builder, canlı fiyat paneli ve varyant karşılaştırması.
 - Node.js + Express: tüm business rule’ların zorunlu uygulandığı API.
 - SQLite: Kit Studio’ya ait uyumluluk metadatası, profiller, tamamlayıcılar, BOM, versiyon ve fiyat snapshot’ları.
-- Panel API: `GET /api/kit-catalog/connectors` ve `GET /api/kit-catalog/connectors/:id`; `kit-catalog:read` izinli Panel API key gerekir.
+- Panel API: kullanıcı oturumları için `/api/auth/*`; katalog için `GET /api/kit-catalog/connectors` ve `GET /api/kit-catalog/connectors/:id`. Yalnız katalog çağrılarında `kit-catalog:read` izinli sunucu tarafı API key kullanılır.
 - Para değerleri integer kuruş, kesirli miktarlar binde bir birim olarak saklanır.
 
-Uyumluluk merkezi bir servis üzerinden `connector_compatibility` ile `profile_specs` alanlarını karşılaştırır. SKU string parse edilmez. Resolver `connector_role + profile` girdisini gerçek Panel product UUID/SKU’suna dönüştürür.
+Uyumluluk merkezi bir servis üzerinden `connector_compatibility` ile `profile_specs` alanlarını karşılaştırır. Panel’in yapılandırılmış form, boru tipi ve ölçü alanları birincil kaynaktır. Yalnız bu alanlar eksikse SKU yedek ayrıştırması kullanılır ve kayıt `SKU_FALLBACK` olarak işaretlenir. Resolver `connector_role + profile` girdisini gerçek Panel product UUID/SKU’suna dönüştürür.
 
 ## Veri modeli
 
@@ -49,15 +49,18 @@ npm run build
 
 ## Panel hazırlığı
 
-Panel yönetim ekranından yalnız `kit-catalog:read` iznine sahip bir API key oluşturun. Bu anahtarı Kit Studio `.env` dosyasındaki `PANEL_API_KEY` alanına, Panel taban adresini `PANEL_API_URL` alanına yazın. Gizli anahtarlar repoya veya Docker imajına eklenmez.
+Panel yönetim ekranından yalnız `kit-catalog:read` iznine sahip bir API key oluşturun. Bu anahtarı Kit Studio `.env` dosyasındaki `PANEL_API_KEY` alanına, Panel taban adresini `PANEL_API_URL` alanına yazın. API key yalnız Kit Studio sunucusunda kalır. Kullanıcılar mevcut Panel kullanıcı adı/parolasıyla giriş yapar; Panel JWT’si `HttpOnly`, `SameSite=Lax` ve production’da `Secure` çerezde tutulur ve her API isteğinde Panel `/api/auth/me` ile doğrulanır.
 
-Panel ile katalog senkronizasyonu:
+Panel ile katalog senkronizasyonu oturum çereziyle yapılır:
 
 ```bash
-curl -X POST http://localhost:3012/api/panel/sync
+curl -c cookies.txt -H 'Content-Type: application/json' \
+  -d '{"username":"PANEL_USER","password":"PANEL_PASSWORD"}' \
+  http://localhost:3012/api/auth/login
+curl -b cookies.txt -X POST http://localhost:3012/api/panel/sync
 ```
 
-`KIT_STUDIO_API_TOKEN` kullanılıyorsa aynı isteğe `Authorization: Bearer ...` başlığı eklenir. Web erişimini production’da reverse proxy/Cloudflare Access gibi kurum erişim katmanıyla sınırlandırın.
+Uygulama açılışta otomatik senkronizasyon dener. Panel erişilemezse son başarılı yerel önbellekle çalışmaya devam eder; arayüz durumu stale/erişilemiyor olarak gösterir. `readonly` kullanıcılar yalnız okuyabilir, `admin` ve `user` kayıt yapabilir; manuel uyumluluk eşlemesi yalnız `admin` rolüne açıktır.
 
 ## Docker ile kurulum
 

@@ -12,7 +12,6 @@ services:
       UPLOAD_DIR: /app/uploads
       PANEL_API_URL: ${PANEL_API_URL}
       PANEL_API_KEY: ${PANEL_API_KEY}
-      KIT_STUDIO_API_TOKEN: ${KIT_STUDIO_API_TOKEN:-}
       ALLOWED_ORIGINS: ${ALLOWED_ORIGINS:-http://localhost:3012}
     volumes:
       - ${KIT_STUDIO_DATA_DIR:-./data}:/data

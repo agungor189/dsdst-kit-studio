@@ -5,7 +5,8 @@ import type Database from "better-sqlite3";
 import express from "express";
 import multer from "multer";
 import { z } from "zod";
-import { syncPanelConnectors } from "../services/panelClient.js";
+import { requireAdmin } from "../middleware/appAuth.js";
+import { fetchPanelProductImage, getPanelSyncStats, syncPanelConnectors } from "../services/panelClient.js";
 
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 5 * 1024 * 1024, files: 1 } });
 const money = z.number().int().nonnegative();
@@ -27,20 +28,31 @@ export function validImage(buffer: Buffer, mimetype: string) {
 export function createCatalogRouter(db: Database.Database) {
   const router = express.Router();
 
-  router.get("/bootstrap", (_req, res) => {
+  router.get("/bootstrap", (req, res) => {
     res.json({
+      user: req.user,
       profiles: profileRows(db),
       complementaryProducts: db.prepare("SELECT cp.*, s.name supplier_name FROM complementary_products cp LEFT JOIN suppliers s ON s.id=cp.supplier_id WHERE cp.active=1 ORDER BY cp.name").all(),
       connectors: db.prepare(`SELECT pc.*, cc.connector_role, cc.compatibility_group, cc.profile_shape
         FROM panel_connector_cache pc LEFT JOIN connector_compatibility cc ON cc.product_id=pc.product_id
-        ORDER BY cc.connector_role, pc.sku`).all(),
+        WHERE pc.catalog_active=1 ORDER BY pc.compatibility_status, cc.connector_role, pc.sku`).all(),
       suppliers: db.prepare("SELECT * FROM suppliers WHERE active=1 ORDER BY name").all(),
       settings: Object.fromEntries((db.prepare("SELECT key,value FROM app_settings").all() as { key: string; value: string }[]).map((row) => [row.key, row.value])),
+      sync: getPanelSyncStats(db),
     });
   });
 
   router.post("/panel/sync", async (_req, res, next) => {
     try { res.json({ synced: await syncPanelConnectors(db) }); } catch (error) { next(error); }
+  });
+
+  router.get("/panel/products/:id/image", async (req, res) => {
+    const row = db.prepare("SELECT image FROM panel_connector_cache WHERE product_id=? AND catalog_active=1").get(req.params.id) as { image?: string } | undefined;
+    if (!row?.image) return res.status(404).json({ error: "IMAGE_NOT_FOUND" });
+    try {
+      const image = await fetchPanelProductImage(req.params.id, row.image);
+      res.set({ "content-type": image.type, "cache-control": "private, max-age=3600" }).send(image.buffer);
+    } catch { res.status(502).json({ error: "PANEL_IMAGE_UNAVAILABLE" }); }
   });
 
   router.get("/suppliers", (_req, res) => res.json(db.prepare("SELECT * FROM suppliers ORDER BY active DESC,name").all()));
@@ -95,13 +107,14 @@ export function createCatalogRouter(db: Database.Database) {
     res.json({ image_path: imagePath });
   });
 
-  router.post("/connector-compatibility", (req, res) => {
+  router.post("/connector-compatibility", requireAdmin, (req, res) => {
     const parsed = z.object({ product_id: z.string().min(1), connector_role: z.string().min(2), profile_shape: z.enum(["SQUARE", "ROUND", "RECTANGULAR"]), profile_width_mm: z.number().positive().optional(), profile_height_mm: z.number().positive().optional(), outside_diameter_mm: z.number().positive().optional(), nominal_size: z.string().optional(), compatible_material_group: z.string().optional(), wall_min_mm: z.number().positive().optional(), wall_max_mm: z.number().positive().optional(), compatibility_group: z.string().min(2) }).parse(req.body);
     const id = crypto.randomUUID();
-    db.prepare(`INSERT INTO connector_compatibility (id,product_id,connector_role,profile_shape,profile_width_mm,profile_height_mm,outside_diameter_mm,nominal_size,compatible_material_group,wall_min_mm,wall_max_mm,compatibility_group)
-      VALUES (@id,@product_id,@connector_role,@profile_shape,@profile_width_mm,@profile_height_mm,@outside_diameter_mm,@nominal_size,@compatible_material_group,@wall_min_mm,@wall_max_mm,@compatibility_group)
-      ON CONFLICT(product_id) DO UPDATE SET connector_role=excluded.connector_role,profile_shape=excluded.profile_shape,profile_width_mm=excluded.profile_width_mm,profile_height_mm=excluded.profile_height_mm,outside_diameter_mm=excluded.outside_diameter_mm,nominal_size=excluded.nominal_size,compatible_material_group=excluded.compatible_material_group,wall_min_mm=excluded.wall_min_mm,wall_max_mm=excluded.wall_max_mm,compatibility_group=excluded.compatibility_group,updated_at=CURRENT_TIMESTAMP`)
+    db.prepare(`INSERT INTO connector_compatibility (id,product_id,connector_role,profile_shape,profile_width_mm,profile_height_mm,outside_diameter_mm,nominal_size,compatible_material_group,wall_min_mm,wall_max_mm,compatibility_group,mapping_source)
+      VALUES (@id,@product_id,@connector_role,@profile_shape,@profile_width_mm,@profile_height_mm,@outside_diameter_mm,@nominal_size,@compatible_material_group,@wall_min_mm,@wall_max_mm,@compatibility_group,'MANUAL')
+      ON CONFLICT(product_id) DO UPDATE SET connector_role=excluded.connector_role,profile_shape=excluded.profile_shape,profile_width_mm=excluded.profile_width_mm,profile_height_mm=excluded.profile_height_mm,outside_diameter_mm=excluded.outside_diameter_mm,nominal_size=excluded.nominal_size,compatible_material_group=excluded.compatible_material_group,wall_min_mm=excluded.wall_min_mm,wall_max_mm=excluded.wall_max_mm,compatibility_group=excluded.compatibility_group,mapping_source='MANUAL',active=1,updated_at=CURRENT_TIMESTAMP`)
       .run({ id, profile_width_mm: null, profile_height_mm: null, outside_diameter_mm: null, nominal_size: null, compatible_material_group: null, wall_min_mm: null, wall_max_mm: null, ...parsed });
+    db.prepare("UPDATE panel_connector_cache SET compatibility_status='COMPATIBLE',compatibility_source='MANUAL',compatibility_note='Yönetici tarafından eşlendi' WHERE product_id=?").run(parsed.product_id);
     res.status(201).json(db.prepare("SELECT * FROM connector_compatibility WHERE product_id=?").get(parsed.product_id));
   });
 

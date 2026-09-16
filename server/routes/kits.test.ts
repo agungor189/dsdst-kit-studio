@@ -6,7 +6,7 @@ import { openDatabase } from "../db/index.js";
 
 let db: Database.Database; let server: ReturnType<ReturnType<typeof createApp>["listen"]>; let baseUrl = "";
 before(async () => {
-  db = openDatabase(":memory:"); server = createApp(db).listen(0); await new Promise<void>((resolve) => server.once("listening", resolve));
+  db = openDatabase(":memory:"); server = createApp(db, { authDisabled: true }).listen(0); await new Promise<void>((resolve) => server.once("listening", resolve));
   const address = server.address(); if (!address || typeof address === "string") throw new Error("Server did not start"); baseUrl = `http://127.0.0.1:${address.port}`;
 });
 after(() => { server.close(); db.close(); });
