@@ -17,6 +17,9 @@ const materialGroup = (value: string) => {
   const normalized = value.replace(/ı/g, "i").replace(/İ/g, "I").normalize("NFD").replace(/\p{Diacritic}/gu, "").toUpperCase().replace(/[^A-Z0-9]/g, "");
   if (normalized.includes("ALUMIN") || normalized.includes("ALUMINYUM")) return "ALUMINUM";
   if (normalized.includes("PASLANMAZ") || normalized.includes("STAINLESS")) return "STAINLESS_STEEL";
+  if (normalized.includes("PREMIUMCASTIRON")) return "PREMIUM_CAST_IRON";
+  if (normalized.includes("DOKUM") || normalized.includes("CASTIRON")) return "CAST_IRON";
+  if (normalized.includes("KARBON") || normalized.includes("CARBONSTEEL")) return "CARBON_STEEL";
   if (normalized.includes("CELIK") || normalized.includes("STEEL")) return "STEEL";
   return normalized;
 };
@@ -35,7 +38,7 @@ export function isCompatible(connector: ConnectorCompatibility, profile: Profile
 
 export function getProfileCompatibility(db: Database.Database, profileId: string) {
   return db.prepare(`SELECT ps.shape, ps.material, ps.width_mm, ps.height_mm, ps.outside_diameter_mm,
-    ps.nominal_size, ps.wall_thickness_mm, ps.compatibility_group
+    ps.nominal_size, ps.wall_thickness_mm, COALESCE(ps.size_compatibility_group,ps.compatibility_group) compatibility_group
     FROM profiles p JOIN profile_specs ps ON ps.id=p.spec_id WHERE p.id=? AND p.active=1`).get(profileId) as ProfileCompatibility | undefined;
 }
 
@@ -57,7 +60,7 @@ export function compatibleProfilesForConnector(db: Database.Database, productId:
   const connector = getConnectorCompatibility(db, productId);
   if (!connector) return [];
   const rows = db.prepare(`SELECT p.*,ps.shape,ps.material,ps.width_mm,ps.height_mm,ps.outside_diameter_mm,
-    ps.nominal_size,ps.wall_thickness_mm,ps.compatibility_group FROM profiles p JOIN profile_specs ps ON ps.id=p.spec_id
+    ps.nominal_size,ps.wall_thickness_mm,COALESCE(ps.size_compatibility_group,ps.compatibility_group) compatibility_group FROM profiles p JOIN profile_specs ps ON ps.id=p.spec_id
     WHERE p.active=1 ORDER BY p.name`).all() as any[];
   return rows.filter((row) => isCompatible(connector, row));
 }

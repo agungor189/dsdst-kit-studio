@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { calculatePricing } from "./pricing.js";
+import { calculatePricing, optimizeProfileCuts } from "./pricing.js";
 
 test("pricing calculates connector snapshots, profile meters, fractional complementary units and VAT", () => {
   const result = calculatePricing({
@@ -26,4 +26,12 @@ test("pricing calculates connector snapshots, profile meters, fractional complem
   assert.equal(result.gross_profit_cents, 108_730);
   assert.equal(result.vat_cents, 59_907);
   assert.equal(result.sale_inc_vat_cents, 359_442);
+});
+
+test("profile optimizer calculates raw bars, saw kerf, waste and utilization", () => {
+  const result = optimizeProfileCuts([{ quantity: 4, length_mm: 1450 }], 6000, 3);
+  assert.equal(result.raw_bar_count, 1);
+  assert.equal(result.purchased_millimeters, 6000);
+  assert.equal(result.waste_millimeters, 191);
+  assert.equal(result.utilization_basis_points, 9667);
 });

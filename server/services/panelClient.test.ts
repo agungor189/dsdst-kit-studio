@@ -27,9 +27,10 @@ test("sync persists resolved and unresolved Panel products with status counts", 
   const stats = getPanelSyncStats(db);
   assert.equal(stats.panelReachable, true); assert.equal(stats.connectorCount, 2); assert.equal(stats.unresolvedCount, 1);
   assert.equal(stats.profileCount, 1); assert.equal(stats.complementCount, 1);
-  assert.equal((db.prepare("SELECT compatibility_group FROM profile_specs JOIN profiles ON profiles.spec_id=profile_specs.id WHERE profiles.id='panel-profile-1'").get() as any).compatibility_group, "SQ-30X30");
+  assert.equal((db.prepare("SELECT size_compatibility_group FROM profile_specs JOIN profiles ON profiles.spec_id=profile_specs.id WHERE profiles.id='panel-profile-1'").get() as any).size_compatibility_group, "SQ-30X30");
   assert.equal((db.prepare("SELECT purchase_unit_price_cents FROM complementary_products WHERE id='panel-comp-1'").get() as any).purchase_unit_price_cents, 1200);
   assert.equal((db.prepare("SELECT compatibility_group FROM connector_compatibility WHERE product_id='real-1'").get() as any).compatibility_group, "SQ-40X40");
+  assert.equal((db.prepare("SELECT sale_price_cents FROM panel_connector_cache WHERE product_id='real-1'").get() as any).sale_price_cents, 1000);
 });
 
 test("a failed refresh keeps the last cache and marks Panel unreachable", async () => {

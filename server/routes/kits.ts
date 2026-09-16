@@ -1,11 +1,16 @@
 import crypto from "node:crypto";
+import fs from "node:fs";
+import path from "node:path";
 import type Database from "better-sqlite3";
 import express from "express";
+import multer from "multer";
 import { z } from "zod";
+import { validImage } from "./catalog.js";
 import { resolveConnector } from "../services/compatibility.js";
 import { savePricingSnapshot, variantDetail } from "../services/variantService.js";
 
 const connectorInput = z.object({ role: z.string().min(2), quantity: z.number().int().positive(), product_id: z.string().optional() });
+const imageUpload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 5 * 1024 * 1024, files: 8 } });
 const cutInput = z.object({ quantity: z.number().int().positive(), length_mm: z.number().int().positive(), label: z.string().optional() });
 const complementaryInput = z.object({ product_id: z.string().min(1), quantity: z.number().positive() });
 const variantInput = z.object({ profile_id: z.string().min(1), connectors: z.array(connectorInput), cuts: z.array(cutInput), complementary_items: z.array(complementaryInput) });
@@ -19,9 +24,10 @@ function kitDetail(db: Database.Database, kitId: string) {
   const kit = db.prepare("SELECT * FROM kits WHERE id=? AND deleted_at IS NULL").get(kitId) as any;
   if (!kit) return null;
   kit.variants = (db.prepare("SELECT id FROM kit_variants WHERE kit_id=? ORDER BY created_at").all(kitId) as { id: string }[]).map((row) => variantDetail(db, row.id));
+  kit.images = db.prepare("SELECT * FROM kit_images WHERE kit_id=? ORDER BY sort_order,created_at").all(kitId);
   const variant = kit.variants[0];
   kit.summary = variant?.summary || { product_cost_cents: 0, extra_cost_cents: Number(kit.labor_cost_cents || 0) + Number(kit.packaging_cost_cents || 0) + Number(kit.other_cost_cents || 0), total_cost_cents: 0, sale_price_cents: Number(kit.sale_price_cents || 0), profit_cents: Number(kit.sale_price_cents || 0), margin_percent: 0 };
-  kit.thumbnail = variant?.connectors.find((line: any) => line.current_image)?.product_id
+  kit.thumbnail = kit.images[0]?.image_path || (variant?.connectors.find((line: any) => line.current_image)?.product_id
     ? `/api/panel/products/${encodeURIComponent(variant.connectors.find((line: any) => line.current_image).product_id)}/image`
     : variant?.profile?.current_image
       ? variant.profile.current_image
@@ -29,7 +35,7 @@ function kitDetail(db: Database.Database, kitId: string) {
       ? (variant.complementary_items.find((line: any) => line.current_image).catalog_source === "PANEL"
           ? `/api/panel/complementary-products/${encodeURIComponent(variant.complementary_items.find((line: any) => line.current_image).complementary_product_id)}/image`
           : variant.complementary_items.find((line: any) => line.current_image).current_image)
-      : null;
+      : null);
   return kit;
 }
 
@@ -38,6 +44,36 @@ export function createKitsRouter(db: Database.Database) {
 
   router.get("/kits", (_req, res) => res.json((db.prepare("SELECT id FROM kits WHERE deleted_at IS NULL ORDER BY updated_at DESC").all() as { id: string }[]).map((row) => kitDetail(db, row.id))));
   router.get("/kits/:id", (req, res) => { const kit = kitDetail(db, req.params.id); return kit ? res.json(kit) : res.status(404).json({ error: "NOT_FOUND" }); });
+
+  router.post("/kits/:id/images", imageUpload.array("images", 8), (req, res) => {
+    const kitId = String(req.params.id);
+    if (!db.prepare("SELECT 1 FROM kits WHERE id=? AND deleted_at IS NULL").get(kitId)) return res.status(404).json({ error: "NOT_FOUND" });
+    const files = (req.files || []) as Express.Multer.File[];
+    if (!files.length || files.some((file) => !validImage(file.buffer, file.mimetype))) return res.status(415).json({ error: "INVALID_IMAGE" });
+    const uploadRoot = path.resolve(process.env.UPLOAD_DIR || "uploads");
+    const directory = path.join(uploadRoot, "kits", kitId); fs.mkdirSync(directory, { recursive: true });
+    const currentOrder = Number((db.prepare("SELECT MAX(sort_order) value FROM kit_images WHERE kit_id=?").get(kitId) as any)?.value ?? -1) + 1;
+    const written: string[] = [];
+    try {
+      db.transaction(() => files.forEach((file, index) => {
+        const extension = file.mimetype === "image/png" ? ".png" : file.mimetype === "image/jpeg" ? ".jpg" : ".webp";
+        const filename = `${crypto.randomUUID()}${extension}`; const absolute = path.join(directory, filename);
+        fs.writeFileSync(absolute, file.buffer, { flag: "wx" }); written.push(absolute);
+        db.prepare("INSERT INTO kit_images (id,kit_id,image_path,sort_order) VALUES (?,?,?,?)").run(crypto.randomUUID(), kitId, `/uploads/kits/${kitId}/${filename}`, currentOrder + index);
+      }))();
+    } catch (error) { for (const file of written) if (fs.existsSync(file)) fs.unlinkSync(file); throw error; }
+    res.status(201).json(kitDetail(db, kitId));
+  });
+
+  router.delete("/kits/:kitId/images/:imageId", (req, res) => {
+    const image = db.prepare("SELECT image_path FROM kit_images WHERE id=? AND kit_id=?").get(req.params.imageId, req.params.kitId) as { image_path: string } | undefined;
+    if (!image) return res.status(404).json({ error: "NOT_FOUND" });
+    db.prepare("DELETE FROM kit_images WHERE id=?").run(req.params.imageId);
+    const uploadRoot = path.resolve(process.env.UPLOAD_DIR || "uploads");
+    const absolute = path.resolve(uploadRoot, image.image_path.replace(/^\/uploads\//, ""));
+    if (absolute.startsWith(`${uploadRoot}${path.sep}`) && fs.existsSync(absolute)) fs.unlinkSync(absolute);
+    res.json({ success: true });
+  });
 
   router.post("/kits", (req, res) => {
     const body = kitMetaInput.extend({ profile_id: z.string().min(1), variant_name: z.string().optional() }).parse(req.body);
@@ -72,6 +108,7 @@ export function createKitsRouter(db: Database.Database) {
     if (variant.status === "APPROVED") return res.status(409).json({ error: "APPROVED_VARIANT_REQUIRES_NEW_VERSION" });
     const profile = db.prepare("SELECT * FROM profiles WHERE id=? AND active=1").get(body.profile_id) as any;
     if (!profile) return res.status(400).json({ error: "INVALID_PROFILE" });
+    if (body.cuts.some((cut) => cut.length_mm > Number(profile.raw_length_mm))) return res.status(400).json({ error: "CUT_LONGER_THAN_RAW_PROFILE" });
     const complementaryLookup = db.prepare("SELECT * FROM complementary_products WHERE id=? AND active=1");
     const resolved = body.connectors.map((line) => {
       const connector = line.product_id ? db.prepare("SELECT pc.*,cc.connector_role,cc.compatibility_group FROM panel_connector_cache pc LEFT JOIN connector_compatibility cc ON cc.product_id=pc.product_id WHERE pc.product_id=? AND pc.catalog_active=1").get(line.product_id) as any : resolveConnector(db, line.role, body.profile_id) as any;
@@ -81,7 +118,7 @@ export function createKitsRouter(db: Database.Database) {
       return { ...line, connector };
     });
     const missing = resolved.filter((line) => !line.connector).map((line) => line.role);
-    const profileSpec = db.prepare("SELECT ps.compatibility_group FROM profiles p JOIN profile_specs ps ON ps.id=p.spec_id WHERE p.id=?").get(body.profile_id) as any;
+    const profileSpec = db.prepare("SELECT COALESCE(ps.size_compatibility_group,ps.compatibility_group) compatibility_group FROM profiles p JOIN profile_specs ps ON ps.id=p.spec_id WHERE p.id=?").get(body.profile_id) as any;
     const compatibilityWarnings = resolved.flatMap((line) => {
       if (!line.connector) return [`${line.role}: uygun ürün eşlemesi bulunamadı`];
       if (!line.connector.compatibility_group) return [`${line.connector.sku}: uyumluluk bilgisi eksik`];
@@ -187,7 +224,7 @@ export function createKitsRouter(db: Database.Database) {
     const body = z.object({ target_profile_id: z.string().min(1), name: z.string().optional() }).parse(req.body);
     const source = variantDetail(db, req.params.id);
     if (!source) return res.status(404).json({ error: "NOT_FOUND" });
-    const targetProfile = db.prepare("SELECT p.*,ps.compatibility_group FROM profiles p JOIN profile_specs ps ON ps.id=p.spec_id WHERE p.id=? AND p.active=1").get(body.target_profile_id) as any;
+    const targetProfile = db.prepare("SELECT p.*,COALESCE(ps.size_compatibility_group,ps.compatibility_group) compatibility_group FROM profiles p JOIN profile_specs ps ON ps.id=p.spec_id WHERE p.id=? AND p.active=1").get(body.target_profile_id) as any;
     if (!targetProfile) return res.status(400).json({ error: "INVALID_PROFILE" });
     const newVariantId = crypto.randomUUID();
     const resolved = source.connectors.map((line: any) => ({ line, connector: resolveConnector(db, line.connector_role, body.target_profile_id) as any }));
@@ -217,7 +254,7 @@ export function createKitsRouter(db: Database.Database) {
     if (!kit) return res.status(404).json({ error: "NOT_FOUND" });
     const variants = (db.prepare("SELECT id FROM kit_variants WHERE kit_id=? AND status!='ARCHIVED' ORDER BY created_at").all(req.params.id) as { id: string }[]).map(({ id }) => {
       const detail = variantDetail(db, id)!;
-      return { id: detail.id, name: detail.name, profile_name: detail.profile_name, status: detail.status, missing_mappings: detail.missing_mappings, pricing: detail.pricing };
+      return { id: detail.id, name: detail.name, profile_name: detail.profile_name, status: detail.status, missing_mappings: detail.missing_mappings, configuration: detail.configuration, pricing: detail.pricing, summary: detail.summary };
     });
     res.json({ kit, variants });
   });

@@ -42,7 +42,8 @@ test("kit center creates, reloads, edits, copies and soft-deletes a complete kit
   assert.equal(reloaded.sku, "KIT-KONSOL-01");
   assert.deepEqual(reloaded.variants[0].cuts.map((cut: any) => [cut.quantity, cut.length_mm]), [[4, 1200], [2, 600]]);
   assert.equal(reloaded.summary.extra_cost_cents, 17500);
-  assert.equal(reloaded.summary.profit_cents, reloaded.sale_price_cents - reloaded.summary.total_cost_cents);
+  assert.equal(reloaded.summary.profit_cents, reloaded.summary.net_revenue_cents - reloaded.summary.total_cost_cents);
+  assert.equal(reloaded.summary.output_vat_cents, reloaded.sale_price_cents - reloaded.summary.net_revenue_cents);
 
   const edited = await fetch(`${baseUrl}/api/variants/${variantId}`, json("PUT", {
     profile_id: "profile-sq20",
@@ -102,4 +103,16 @@ test("Square to Round conversion marks missing role as INCOMPLETE and blocks app
   assert.deepEqual(converted.missing_mappings, ["3W"]);
   const approval = await fetch(`${baseUrl}/api/variants/${converted.id}/approve`, json("POST", {}));
   assert.equal(approval.status, 409);
+});
+
+test("kit keeps the original variant and returns both configurations for comparison", async () => {
+  const created = await (await fetch(`${baseUrl}/api/kits`, json("POST", { name: "Karşılaştırmalı Kit", profile_id: "profile-sq20", sale_price_cents: 120000 }))).json() as any;
+  const sourceId = created.variants[0].id;
+  await fetch(`${baseUrl}/api/variants/${sourceId}`, json("PUT", { profile_id: "profile-sq20", connectors: [{ role: "ELB", quantity: 2 }], cuts: [{ quantity: 2, length_mm: 1000 }], complementary_items: [] }));
+  const alternative = await (await fetch(`${baseUrl}/api/variants/${sourceId}/clone`, json("POST", { target_profile_id: "profile-sq40" }))).json() as any;
+  const compare = await (await fetch(`${baseUrl}/api/kits/${created.id}/compare`)).json() as any;
+  assert.deepEqual(compare.variants.map((variant: any) => variant.id), [sourceId, alternative.id]);
+  assert.equal(compare.variants[0].configuration.wall_thickness_mm, 1.5);
+  assert.equal(compare.variants[1].configuration.wall_thickness_mm, 2);
+  assert.equal(compare.variants.every((variant: any) => typeof variant.summary.net_profit_cents === "number"), true);
 });
