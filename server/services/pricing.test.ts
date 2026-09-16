@@ -35,3 +35,14 @@ test("profile optimizer calculates raw bars, saw kerf, waste and utilization", (
   assert.equal(result.waste_millimeters, 191);
   assert.equal(result.utilization_basis_points, 9667);
 });
+
+test("kit profile cost uses consumed meters while retaining raw-bar optimization metrics", () => {
+  const result = calculatePricing({
+    connectors: [], profile: { purchase_price_snapshot_cents: 10_000, sale_price_snapshot_cents: 15_000, weight_per_meter_snapshot_kg: 1, raw_length_mm: 6000 },
+    cuts: [{ quantity: 2, length_mm: 1000 }], complementary: [], vatRateBasisPoints: 2000,
+  });
+  assert.equal(result.profiles.cost_cents, 20_000);
+  assert.equal(result.profiles.purchased_millimeters, 6000);
+  assert.equal(result.profiles.total_millimeters, 2000);
+  assert.equal(result.profiles.weight_grams, 2000);
+});

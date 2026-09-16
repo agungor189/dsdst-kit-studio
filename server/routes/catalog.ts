@@ -40,7 +40,8 @@ export function createCatalogRouter(db: Database.Database) {
       user: req.user,
       profiles: profileRows(db),
       complementaryProducts: db.prepare("SELECT cp.*, s.name supplier_name FROM complementary_products cp LEFT JOIN suppliers s ON s.id=cp.supplier_id WHERE cp.active=1 AND COALESCE(cp.catalog_active,1)=1 ORDER BY cp.name").all(),
-      connectors: db.prepare(`SELECT pc.*, cc.connector_role, cc.compatibility_group, cc.profile_shape
+      connectors: db.prepare(`SELECT pc.*, cc.connector_role, cc.compatibility_group, cc.profile_shape,cc.compatible_material_group,
+        cc.profile_width_mm,cc.profile_height_mm,cc.outside_diameter_mm,cc.nominal_size,cc.wall_min_mm,cc.wall_max_mm
         FROM panel_connector_cache pc LEFT JOIN connector_compatibility cc ON cc.product_id=pc.product_id
         WHERE pc.catalog_active=1 ORDER BY pc.compatibility_status, cc.connector_role, pc.sku`).all(),
       suppliers: db.prepare("SELECT * FROM suppliers WHERE active=1 ORDER BY name").all(),

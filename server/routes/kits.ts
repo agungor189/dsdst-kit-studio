@@ -7,20 +7,24 @@ import multer from "multer";
 import { z } from "zod";
 import { validImage } from "./catalog.js";
 import { resolveConnector } from "../services/compatibility.js";
+import { conversionOptions, deriveKit, previewVariantConversion } from "../services/conversionService.js";
 import { savePricingSnapshot, variantDetail } from "../services/variantService.js";
 
 const connectorInput = z.object({ role: z.string().min(2), quantity: z.number().int().positive(), product_id: z.string().optional() });
 const imageUpload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 5 * 1024 * 1024, files: 8 } });
 const cutInput = z.object({ quantity: z.number().int().positive(), length_mm: z.number().int().positive(), label: z.string().optional() });
 const complementaryInput = z.object({ product_id: z.string().min(1), quantity: z.number().positive() });
-const variantInput = z.object({ profile_id: z.string().min(1), connectors: z.array(connectorInput), cuts: z.array(cutInput), complementary_items: z.array(complementaryInput) });
+const variantInput = z.object({ profile_id: z.string().min(1), connectors: z.array(connectorInput), cuts: z.array(cutInput), complementary_items: z.array(complementaryInput) }).superRefine((value, context) => {
+  const roles = value.connectors.map((line) => line.role);
+  if (new Set(roles).size !== roles.length) context.addIssue({ code: "custom", path: ["connectors"], message: "Connector roles must be unique inside one configuration" });
+});
 const kitMetaInput = z.object({
   name: z.string().min(2), sku: z.string().trim().min(1).nullable().optional(), description: z.string().optional(),
   sale_price_cents: z.number().int().nonnegative().default(0), labor_cost_cents: z.number().int().nonnegative().default(0),
   packaging_cost_cents: z.number().int().nonnegative().default(0), other_cost_cents: z.number().int().nonnegative().default(0),
 });
 
-function kitDetail(db: Database.Database, kitId: string) {
+export function kitDetail(db: Database.Database, kitId: string) {
   const kit = db.prepare("SELECT * FROM kits WHERE id=? AND deleted_at IS NULL").get(kitId) as any;
   if (!kit) return null;
   kit.variants = (db.prepare("SELECT id FROM kit_variants WHERE kit_id=? ORDER BY created_at").all(kitId) as { id: string }[]).map((row) => variantDetail(db, row.id));
@@ -44,6 +48,26 @@ export function createKitsRouter(db: Database.Database) {
 
   router.get("/kits", (_req, res) => res.json((db.prepare("SELECT id FROM kits WHERE deleted_at IS NULL ORDER BY updated_at DESC").all() as { id: string }[]).map((row) => kitDetail(db, row.id))));
   router.get("/kits/:id", (req, res) => { const kit = kitDetail(db, req.params.id); return kit ? res.json(kit) : res.status(404).json({ error: "NOT_FOUND" }); });
+
+  router.get("/variants/:id/conversion-options", (req, res) => {
+    const mode = req.query.mode === "profile" ? "profile" : "connector";
+    const options = conversionOptions(db, req.params.id, mode);
+    return options ? res.json({ mode, options }) : res.status(404).json({ error: "NOT_FOUND" });
+  });
+
+  router.post("/variants/:id/conversion-preview", (req, res) => {
+    const body = z.object({ target_profile_id: z.string().min(1) }).parse(req.body);
+    const preview = previewVariantConversion(db, req.params.id, body.target_profile_id);
+    return preview ? res.json(preview) : res.status(404).json({ error: "NOT_FOUND" });
+  });
+
+  router.post("/variants/:id/derive", (req, res) => {
+    const body = z.object({ target_profile_id: z.string().min(1), name: z.string().min(2), sku: z.string().trim().min(1).nullable().optional() }).parse(req.body);
+    if (body.sku && db.prepare("SELECT 1 FROM kits WHERE sku=? COLLATE NOCASE AND deleted_at IS NULL").get(body.sku)) return res.status(409).json({ error: "DUPLICATE_SKU" });
+    const result = deriveKit(db, req.params.id, body.target_profile_id, body);
+    if ("error" in result) return res.status(result.error === "NOT_FOUND" ? 404 : 409).json({ error: result.error, missing: result.missing });
+    res.status(201).json(kitDetail(db, result.kitId));
+  });
 
   router.post("/kits/:id/images", imageUpload.array("images", 8), (req, res) => {
     const kitId = String(req.params.id);
@@ -124,6 +148,7 @@ export function createKitsRouter(db: Database.Database) {
       if (!line.connector.compatibility_group) return [`${line.connector.sku}: uyumluluk bilgisi eksik`];
       return line.connector.compatibility_group === profileSpec.compatibility_group ? [] : [`${line.connector.sku}: ${line.connector.compatibility_group}, profil ${profileSpec.compatibility_group}`];
     });
+    if (compatibilityWarnings.length) return res.status(409).json({ error: "INCOMPATIBLE_CONNECTOR", warnings: compatibilityWarnings });
     const complements = body.complementary_items.map((line) => {
       const product = complementaryLookup.get(line.product_id) as any;
       if (!product) throw new Error(`INVALID_COMPLEMENTARY:${line.product_id}`);

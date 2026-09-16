@@ -12,14 +12,16 @@ before(async () => {
 after(() => { server.close(); db.close(); });
 const json = (method: string, body: unknown) => ({ method, headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
 
-test("server rejects connector price override but stores incompatibility as a warning", async () => {
+test("server rejects connector price overrides and incompatible normal selections", async () => {
   const created = await (await fetch(`${baseUrl}/api/kits`, json("POST", { name: "Test Kit", profile_id: "profile-sq20" }))).json() as any;
   const variantId = created.variants[0].id;
   const override = await fetch(`${baseUrl}/api/variants/${variantId}`, json("PUT", { profile_id: "profile-sq20", connectors: [{ role: "ELB", quantity: 1, sale_price_cents: 1 }], cuts: [], complementary_items: [] }));
   assert.equal(override.status, 400);
   const incompatible = await fetch(`${baseUrl}/api/variants/${variantId}`, json("PUT", { profile_id: "profile-sq20", connectors: [{ role: "ELB", product_id: "panel-s40-elb", quantity: 1 }], cuts: [], complementary_items: [] }));
-  assert.equal(incompatible.status, 200);
-  assert.match(((await incompatible.json() as any).compatibility_warnings[0]), /SQ-40X40/);
+  assert.equal(incompatible.status, 409);
+  assert.equal((await incompatible.json() as any).error, "INCOMPATIBLE_CONNECTOR");
+  const duplicateRole = await fetch(`${baseUrl}/api/variants/${variantId}`, json("PUT", { profile_id: "profile-sq20", connectors: [{ role: "ELB", product_id: "panel-s20-elb", quantity: 1 }, { role: "ELB", product_id: "panel-s20-elb", quantity: 2 }], cuts: [], complementary_items: [] }));
+  assert.equal(duplicateRole.status, 400);
 });
 
 test("kit center creates, reloads, edits, copies and soft-deletes a complete kit", async () => {
@@ -43,7 +45,7 @@ test("kit center creates, reloads, edits, copies and soft-deletes a complete kit
   assert.deepEqual(reloaded.variants[0].cuts.map((cut: any) => [cut.quantity, cut.length_mm]), [[4, 1200], [2, 600]]);
   assert.equal(reloaded.summary.extra_cost_cents, 17500);
   assert.equal(reloaded.summary.profit_cents, reloaded.summary.net_revenue_cents - reloaded.summary.total_cost_cents);
-  assert.equal(reloaded.summary.output_vat_cents, reloaded.sale_price_cents - reloaded.summary.net_revenue_cents);
+  assert.equal(reloaded.summary.output_vat_cents, Math.round(reloaded.sale_price_cents * 2000 / 12000));
 
   const edited = await fetch(`${baseUrl}/api/variants/${variantId}`, json("PUT", {
     profile_id: "profile-sq20",
@@ -115,4 +117,42 @@ test("kit keeps the original variant and returns both configurations for compari
   assert.equal(compare.variants[0].configuration.wall_thickness_mm, 1.5);
   assert.equal(compare.variants[1].configuration.wall_thickness_mm, 2);
   assert.equal(compare.variants.every((variant: any) => typeof variant.summary.net_profit_cents === "number"), true);
+});
+
+test("conversion preview is read-only and a full alternative saves as an independently related kit", async () => {
+  const created = await (await fetch(`${baseUrl}/api/kits`, json("POST", { name: "Kaynak Masa", sku: "SRC-MASA", profile_id: "profile-sq20" }))).json() as any;
+  const sourceId = created.variants[0].id;
+  await fetch(`${baseUrl}/api/variants/${sourceId}`, json("PUT", { profile_id: "profile-sq20", connectors: [{ role: "ELB", quantity: 4 }, { role: "TEE", quantity: 2 }], cuts: [{ quantity: 4, length_mm: 1000 }, { quantity: 4, length_mm: 500 }], complementary_items: [] }));
+  const before = (await (await fetch(`${baseUrl}/api/kits`)).json() as any[]).length;
+  const options = await (await fetch(`${baseUrl}/api/variants/${sourceId}/conversion-options?mode=connector`)).json() as any;
+  const square40 = options.options.find((option: any) => option.target.profile.id === "profile-sq40");
+  assert.equal(square40.status, "FULL");
+  assert.deepEqual(square40.target.connectors.map((line: any) => line.role), ["ELB", "TEE"]);
+  assert.equal((await (await fetch(`${baseUrl}/api/kits`)).json() as any[]).length, before);
+  const derivedResponse = await fetch(`${baseUrl}/api/variants/${sourceId}/derive`, json("POST", { target_profile_id: "profile-sq40", name: "Kaynak Masa – S40", sku: "DERIVED-S40" }));
+  assert.equal(derivedResponse.status, 201); const derived = await derivedResponse.json() as any;
+  assert.equal(derived.derived_from_kit_id, created.id);
+  assert.notEqual(derived.id, created.id); assert.equal(derived.variants[0].profile_id, "profile-sq40");
+  assert.deepEqual(derived.variants[0].cuts.map((cut: any) => [cut.quantity, cut.length_mm]), [[4, 1000], [4, 500]]);
+  const original = await (await fetch(`${baseUrl}/api/kits/${created.id}`)).json() as any;
+  assert.equal(original.variants.length, 1); assert.equal(original.variants[0].profile_id, "profile-sq20");
+});
+
+test("partial conversion reports the missing model and profile variants recalculate weight and profit", async () => {
+  db.prepare("INSERT INTO profile_specs (id,shape,material,width_mm,height_mm,wall_thickness_mm,compatibility_group,size_compatibility_group) VALUES ('spec-sq20-heavy','SQUARE','Aluminum',20,20,2.5,'SQ-20X20|heavy','SQ-20X20')").run();
+  db.prepare("INSERT INTO profiles (id,spec_id,name,raw_length_mm,weight_per_meter_kg,purchase_price_per_meter_cents,sale_price_per_meter_cents) VALUES ('profile-sq20-heavy','spec-sq20-heavy','Square 20×20 Aluminum 2.5 mm',6000,0.65,14000,20000)").run();
+  const created = await (await fetch(`${baseUrl}/api/kits`, json("POST", { name: "Kârlı Kit", profile_id: "profile-sq20", sale_price_cents: 210000 }))).json() as any;
+  const sourceId = created.variants[0].id;
+  await fetch(`${baseUrl}/api/variants/${sourceId}`, json("PUT", { profile_id: "profile-sq20", connectors: [{ role: "ELB", quantity: 4 }, { role: "3W", quantity: 2 }], cuts: [{ quantity: 6, length_mm: 1000 }], complementary_items: [] }));
+  const connectorOptions = await (await fetch(`${baseUrl}/api/variants/${sourceId}/conversion-options?mode=connector`)).json() as any;
+  const round = connectorOptions.options.find((option: any) => option.target.profile.id === "profile-rd337");
+  assert.equal(round.status, "PARTIAL"); assert.deepEqual(round.missing_roles, ["3W"]);
+  const blocked = await fetch(`${baseUrl}/api/variants/${sourceId}/derive`, json("POST", { target_profile_id: "profile-rd337", name: "Eksik Kit" }));
+  assert.equal(blocked.status, 409);
+  const profileOptions = await (await fetch(`${baseUrl}/api/variants/${sourceId}/conversion-options?mode=profile`)).json() as any;
+  const heavy = profileOptions.options.find((option: any) => option.target.profile.id === "profile-sq20-heavy");
+  assert.equal(heavy.status, "FULL");
+  assert.ok(heavy.target.summary.total_weight_grams > heavy.source.pricing.profiles.weight_grams);
+  assert.ok(heavy.target.summary.total_cost_cents > heavy.source.summary.total_cost_cents);
+  assert.equal(heavy.target.summary.profit_cents, heavy.target.summary.sale_price_cents - heavy.target.summary.total_cost_cents);
 });

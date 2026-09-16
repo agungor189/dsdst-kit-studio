@@ -26,10 +26,9 @@ export function variantDetail(db: Database.Database, variantId: string) {
   const extras = Number(variant.labor_cost_cents || 0) + Number(variant.packaging_cost_cents || 0) + Number(variant.other_cost_cents || 0);
   const vatRate = Number(variant.pricing.vat_rate_basis_points || 0);
   const saleIncVat = Number(variant.sale_price_cents || 0);
-  const netRevenue = vatRate ? Math.round((saleIncVat * 10_000) / (10_000 + vatRate)) : saleIncVat;
-  const outputVat = saleIncVat - netRevenue;
-  const grossProfit = netRevenue - variant.pricing.total_cost_cents;
-  const netProfit = grossProfit - extras;
+  const outputVat = vatRate ? Math.round((saleIncVat * vatRate) / (10_000 + vatRate)) : 0;
+  const totalCost = variant.pricing.total_cost_cents + extras;
+  const profit = saleIncVat - totalCost;
   variant.configuration = {
     material: variant.material, shape: variant.shape, compatibility_group: variant.compatibility_group,
     wall_thickness_mm: variant.wall_thickness_mm, size: variant.nominal_size || (variant.shape === "ROUND" ? `Ø${variant.outside_diameter_mm}` : `${variant.width_mm}×${variant.height_mm}`),
@@ -37,14 +36,14 @@ export function variantDetail(db: Database.Database, variantId: string) {
   variant.summary = {
     product_cost_cents: variant.pricing.total_cost_cents,
     extra_cost_cents: extras,
-    total_cost_cents: variant.pricing.total_cost_cents + extras,
+    total_cost_cents: totalCost,
     sale_price_cents: saleIncVat,
-    net_revenue_cents: netRevenue,
+    net_revenue_cents: saleIncVat,
     output_vat_cents: outputVat,
-    gross_profit_cents: grossProfit,
-    profit_cents: netProfit,
-    net_profit_cents: netProfit,
-    margin_percent: netRevenue > 0 ? (netProfit / netRevenue) * 100 : 0,
+    gross_profit_cents: profit,
+    profit_cents: profit,
+    net_profit_cents: profit,
+    margin_percent: saleIncVat > 0 ? (profit / saleIncVat) * 100 : 0,
   };
   return variant;
 }

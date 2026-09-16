@@ -36,7 +36,9 @@ export function calculatePricing(input: PricingInput): PricingResult {
   const connectorSale = input.connectors.reduce((sum, item) => sum + item.sale_price_snapshot_cents * item.quantity, 0);
   const totalMillimeters = input.cuts.reduce((sum, cut) => sum + cut.quantity * cut.length_mm, 0);
   const optimization = input.profile?.raw_length_mm ? optimizeProfileCuts(input.cuts, input.profile.raw_length_mm) : { raw_bar_count: 0, purchased_millimeters: totalMillimeters, waste_millimeters: 0, utilization_basis_points: totalMillimeters ? 10_000 : 0 };
-  const profileCost = input.profile ? roundedRatio(input.profile.purchase_price_snapshot_cents, optimization.purchased_millimeters, 1000) : 0;
+  // Kit costing is based on consumed profile length. Raw-bar optimization remains visible
+  // as a purchasing/fire metric, but reusable offcuts are not charged to one kit.
+  const profileCost = input.profile ? roundedRatio(input.profile.purchase_price_snapshot_cents, totalMillimeters, 1000) : 0;
   const profileSale = input.profile ? roundedRatio(input.profile.sale_price_snapshot_cents, totalMillimeters, 1000) : 0;
   const weightGrams = input.profile ? Math.round(input.profile.weight_per_meter_snapshot_kg * totalMillimeters) : 0;
   const complementaryCost = input.complementary.reduce((sum, item) => sum + roundedRatio(item.purchase_price_snapshot_cents, item.quantity_milli, 1000), 0);
