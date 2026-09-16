@@ -7,10 +7,13 @@ export type PanelConnector = {
   supplier_code?: string; material?: string; form?: string; form_code?: string;
   tube_type_code?: string; size_code?: string; size?: string; pipe_size?: string;
   normalized_material?: string; normalized_size?: string; normalized_tube_type?: string; normalized_pipe_size?: string;
+  model?: string;
   image?: string; purchase_cost?: number; sale_price?: number; central_stock?: number; updated_at?: string;
 };
 
-export type SyncResult = { synced: number; compatible: number; unresolved: number; lastSyncedAt: string };
+export type PanelProfile = { id: string; name: string; shape?: string; dimension?: string; material?: string; thickness?: string; effective_price_per_meter?: number; price_per_meter?: number; weight_per_meter?: number; stock_length_mm?: number; updated_at?: string };
+export type PanelComplement = { id: string; name: string; category?: string; description?: string; supplier_reference?: string; unit?: string; purchase_price?: number; image?: string; notes?: string; updated_at?: string };
+export type SyncResult = { synced: number; profilesSynced: number; complementsSynced: number; compatible: number; unresolved: number; lastSyncedAt: string };
 
 function config() {
   const baseUrl = process.env.PANEL_API_URL?.replace(/\/$/, "");
@@ -36,25 +39,49 @@ export function getPanelSyncStats(db: Database.Database) {
     lastError: values.panel_last_error || null,
     connectorCount: Number(counts.connectorCount || 0), compatibleCount: Number(counts.compatibleCount || 0),
     unresolvedCount: Number(counts.unresolvedCount || 0),
+    profileCount: Number(values.panel_profile_count || 0), complementCount: Number(values.panel_complement_count || 0),
   };
+}
+
+function profileSpec(row: PanelProfile) {
+  const source = `${row.dimension || ""}`.replace(/,/g, ".");
+  const numbers = [...source.matchAll(/\d+(?:\.\d+)?/g)].map((match) => Number(match[0]));
+  const shapeText = String(row.shape || "").toLocaleLowerCase("tr");
+  const round = /round|yuvarlak|daire|boru/.test(shapeText);
+  const shape = round ? "ROUND" : numbers.length > 1 && numbers[0] !== numbers[1] ? "RECTANGULAR" : "SQUARE";
+  const dimension = numbers[0] || 1;
+  const width = round ? null : dimension;
+  const height = round ? null : (numbers[1] || dimension);
+  const diameter = round ? dimension : null;
+  const compatibilityGroup = round ? `RD-${diameter}` : `SQ-${width}X${height}`;
+  return { shape, width, height, diameter, compatibilityGroup };
+}
+
+async function catalog<T>(baseUrl: string, apiKey: string, path: string, fetchImpl: typeof fetch) {
+  const response = await fetchImpl(`${baseUrl}/api/kit-catalog/${path}`, { headers: { "x-api-key": apiKey }, signal: AbortSignal.timeout(15_000) });
+  if (!response.ok) throw new Error(`Panel ${path} sync failed with ${response.status}`);
+  const payload = await response.json() as { success: boolean; data: T[] };
+  if (!payload.success || !Array.isArray(payload.data)) throw new Error(`Panel ${path} response is invalid`);
+  return payload.data;
 }
 
 export async function syncPanelConnectors(db: Database.Database, fetchImpl: typeof fetch = fetch): Promise<SyncResult> {
   setting(db, "panel_last_attempt_at", new Date().toISOString());
   try {
     const { baseUrl, apiKey } = config();
-    const response = await fetchImpl(`${baseUrl}/api/kit-catalog/connectors`, { headers: { "x-api-key": apiKey }, signal: AbortSignal.timeout(15_000) });
-    if (!response.ok) throw new Error(`Panel catalog sync failed with ${response.status}`);
-    const payload = await response.json() as { success: boolean; data: PanelConnector[] };
-    if (!payload.success || !Array.isArray(payload.data)) throw new Error("Panel catalog response is invalid");
+    const [connectors, profiles, complements] = await Promise.all([
+      catalog<PanelConnector>(baseUrl, apiKey, "connectors", fetchImpl),
+      catalog<PanelProfile>(baseUrl, apiKey, "profiles", fetchImpl),
+      catalog<PanelComplement>(baseUrl, apiKey, "complementary-products", fetchImpl),
+    ]);
 
     const upsertCache = db.prepare(`INSERT INTO panel_connector_cache
       (product_id,sku,name_tr,name_en,supplier_code,material,form,form_code,tube_type_code,size_code,size,pipe_size,
        normalized_material,normalized_size,normalized_tube_type,normalized_pipe_size,image,purchase_cost_cents,sale_price_cents,
-       central_stock,panel_updated_at,synced_at,compatibility_status,compatibility_source,compatibility_note,catalog_active)
+       central_stock,panel_updated_at,synced_at,compatibility_status,compatibility_source,compatibility_note,catalog_active,model)
       VALUES (@id,@sku,@name_tr,@name_en,@supplier_code,@material,@form,@form_code,@tube_type_code,@size_code,@size,@pipe_size,
        @normalized_material,@normalized_size,@normalized_tube_type,@normalized_pipe_size,@image,@purchase_cost_cents,@sale_price_cents,
-       @central_stock,@updated_at,CURRENT_TIMESTAMP,@compatibility_status,@compatibility_source,@compatibility_note,1)
+       @central_stock,@updated_at,CURRENT_TIMESTAMP,@compatibility_status,@compatibility_source,@compatibility_note,1,@model)
       ON CONFLICT(product_id) DO UPDATE SET sku=excluded.sku,name_tr=excluded.name_tr,name_en=excluded.name_en,
        supplier_code=excluded.supplier_code,material=excluded.material,form=excluded.form,form_code=excluded.form_code,
        tube_type_code=excluded.tube_type_code,size_code=excluded.size_code,size=excluded.size,pipe_size=excluded.pipe_size,
@@ -62,7 +89,7 @@ export async function syncPanelConnectors(db: Database.Database, fetchImpl: type
        normalized_tube_type=excluded.normalized_tube_type,normalized_pipe_size=excluded.normalized_pipe_size,image=excluded.image,
        purchase_cost_cents=excluded.purchase_cost_cents,sale_price_cents=excluded.sale_price_cents,central_stock=excluded.central_stock,
        panel_updated_at=excluded.panel_updated_at,synced_at=CURRENT_TIMESTAMP,compatibility_status=excluded.compatibility_status,
-       compatibility_source=excluded.compatibility_source,compatibility_note=excluded.compatibility_note,catalog_active=1`);
+       compatibility_source=excluded.compatibility_source,compatibility_note=excluded.compatibility_note,catalog_active=1,model=excluded.model`);
     const existing = db.prepare("SELECT mapping_source FROM connector_compatibility WHERE product_id=?");
     const removeAuto = db.prepare("DELETE FROM connector_compatibility WHERE product_id=? AND mapping_source!='MANUAL'");
     const upsertCompatibility = db.prepare(`INSERT INTO connector_compatibility
@@ -91,6 +118,7 @@ export async function syncPanelConnectors(db: Database.Database, fetchImpl: type
           size: row.size || null, pipe_size: row.pipe_size || null, normalized_material: row.normalized_material || null,
           normalized_size: row.normalized_size || null, normalized_tube_type: row.normalized_tube_type || null,
           normalized_pipe_size: row.normalized_pipe_size || null, image: row.image || null,
+          model: row.model || null,
           purchase_cost_cents: Math.round(Number(row.purchase_cost || 0) * 100), sale_price_cents: Math.round(Number(row.sale_price || 0) * 100),
           central_stock: Math.trunc(Number(row.central_stock || 0)), updated_at: row.updated_at || null,
           compatibility_status: effective.status, compatibility_source: effective.source, compatibility_note: effective.note,
@@ -105,9 +133,34 @@ export async function syncPanelConnectors(db: Database.Database, fetchImpl: type
           mapping_source: mapped.source,
         });
       }
+      db.prepare("UPDATE profiles SET catalog_active=0 WHERE catalog_source='PANEL'").run();
+      const upsertSpec = db.prepare(`INSERT INTO profile_specs (id,shape,material,width_mm,height_mm,outside_diameter_mm,nominal_size,wall_thickness_mm,compatibility_group)
+        VALUES (@id,@shape,@material,@width,@height,@diameter,@nominal,@wall,@group)
+        ON CONFLICT(compatibility_group) DO UPDATE SET shape=excluded.shape,material=excluded.material,width_mm=excluded.width_mm,height_mm=excluded.height_mm,outside_diameter_mm=excluded.outside_diameter_mm,nominal_size=excluded.nominal_size,wall_thickness_mm=excluded.wall_thickness_mm`);
+      const findSpec = db.prepare("SELECT id FROM profile_specs WHERE compatibility_group=?");
+      const upsertProfile = db.prepare(`INSERT INTO profiles (id,spec_id,name,raw_length_mm,weight_per_meter_kg,purchase_price_per_meter_cents,sale_price_per_meter_cents,image_path,active,catalog_source,panel_updated_at,catalog_active)
+        VALUES (@id,@spec_id,@name,@raw_length,@weight,@price,@price,NULL,1,'PANEL',@updated_at,1)
+        ON CONFLICT(id) DO UPDATE SET spec_id=excluded.spec_id,name=excluded.name,raw_length_mm=excluded.raw_length_mm,weight_per_meter_kg=excluded.weight_per_meter_kg,purchase_price_per_meter_cents=excluded.purchase_price_per_meter_cents,sale_price_per_meter_cents=excluded.sale_price_per_meter_cents,active=1,catalog_source='PANEL',panel_updated_at=excluded.panel_updated_at,catalog_active=1,updated_at=CURRENT_TIMESTAMP`);
+      for (const row of profiles) {
+        const spec = profileSpec(row);
+        const existingSpec = findSpec.get(spec.compatibilityGroup) as { id: string } | undefined;
+        const specId = existingSpec?.id || `panel-spec-${row.id}`;
+        upsertSpec.run({ id: specId, shape: spec.shape, material: row.material || "UNKNOWN", width: spec.width, height: spec.height, diameter: spec.diameter, nominal: row.dimension || null, wall: Number.parseFloat(String(row.thickness || "0")) || 0, group: spec.compatibilityGroup });
+        upsertProfile.run({ id: row.id, spec_id: specId, name: row.name, raw_length: Math.round(Number(row.stock_length_mm || 6000)), weight: Number(row.weight_per_meter || 0), price: Math.round(Number(row.effective_price_per_meter ?? row.price_per_meter ?? 0) * 100), updated_at: row.updated_at || null });
+      }
+      db.prepare("UPDATE complementary_products SET catalog_active=0 WHERE catalog_source='PANEL'").run();
+      const upsertComplement = db.prepare(`INSERT INTO complementary_products (id,name,sku_optional,description,unit_type,purchase_unit_price_cents,sale_unit_price_cents,image_path,notes,active,catalog_source,panel_updated_at,catalog_active)
+        VALUES (@id,@name,@sku,@description,@unit,@price,@price,@image,@notes,1,'PANEL',@updated_at,1)
+        ON CONFLICT(id) DO UPDATE SET name=excluded.name,sku_optional=excluded.sku_optional,description=excluded.description,unit_type=excluded.unit_type,purchase_unit_price_cents=excluded.purchase_unit_price_cents,sale_unit_price_cents=excluded.sale_unit_price_cents,image_path=excluded.image_path,notes=excluded.notes,active=1,catalog_source='PANEL',panel_updated_at=excluded.panel_updated_at,catalog_active=1,updated_at=CURRENT_TIMESTAMP`);
+      for (const row of complements) {
+        const unitText = String(row.unit || "adet").toLocaleLowerCase("tr");
+        const unit = unitText.includes("m²") || unitText.includes("m2") ? "M2" : unitText.includes("metre") || unitText === "m" ? "METER" : "PIECE";
+        upsertComplement.run({ id: row.id, name: row.name, sku: row.supplier_reference || null, description: row.description || row.category || null, unit, price: Math.round(Number(row.purchase_price || 0) * 100), image: row.image || null, notes: row.notes || null, updated_at: row.updated_at || null });
+      }
+      setting(db, "panel_profile_count", String(profiles.length)); setting(db, "panel_complement_count", String(complements.length));
       setting(db, "panel_reachable", "true"); setting(db, "panel_last_synced_at", syncedAt); setting(db, "panel_last_error", "");
-    })(payload.data);
-    return { synced: payload.data.length, compatible, unresolved, lastSyncedAt: syncedAt };
+    })(connectors);
+    return { synced: connectors.length, profilesSynced: profiles.length, complementsSynced: complements.length, compatible, unresolved, lastSyncedAt: syncedAt };
   } catch (error) {
     setting(db, "panel_reachable", "false");
     setting(db, "panel_last_error", error instanceof Error ? error.message.slice(0, 300) : "Panel bağlantısı başarısız");

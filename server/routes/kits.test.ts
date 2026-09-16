@@ -12,13 +12,61 @@ before(async () => {
 after(() => { server.close(); db.close(); });
 const json = (method: string, body: unknown) => ({ method, headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
 
-test("server rejects connector price override and incompatible connector", async () => {
+test("server rejects connector price override but stores incompatibility as a warning", async () => {
   const created = await (await fetch(`${baseUrl}/api/kits`, json("POST", { name: "Test Kit", profile_id: "profile-sq20" }))).json() as any;
   const variantId = created.variants[0].id;
   const override = await fetch(`${baseUrl}/api/variants/${variantId}`, json("PUT", { profile_id: "profile-sq20", connectors: [{ role: "ELB", quantity: 1, sale_price_cents: 1 }], cuts: [], complementary_items: [] }));
   assert.equal(override.status, 400);
   const incompatible = await fetch(`${baseUrl}/api/variants/${variantId}`, json("PUT", { profile_id: "profile-sq20", connectors: [{ role: "ELB", product_id: "panel-s40-elb", quantity: 1 }], cuts: [], complementary_items: [] }));
-  assert.equal(incompatible.status, 400);
+  assert.equal(incompatible.status, 200);
+  assert.match(((await incompatible.json() as any).compatibility_warnings[0]), /SQ-40X40/);
+});
+
+test("kit center creates, reloads, edits, copies and soft-deletes a complete kit", async () => {
+  const createdResponse = await fetch(`${baseUrl}/api/kits`, json("POST", {
+    name: "Konsol Kit", sku: "KIT-KONSOL-01", description: "Acceptance kit", profile_id: "profile-sq20",
+    sale_price_cents: 250000, labor_cost_cents: 10000, packaging_cost_cents: 5000, other_cost_cents: 2500,
+  }));
+  assert.equal(createdResponse.status, 201);
+  const created = await createdResponse.json() as any;
+  const variantId = created.variants[0].id;
+  const savedResponse = await fetch(`${baseUrl}/api/variants/${variantId}`, json("PUT", {
+    profile_id: "profile-sq20",
+    connectors: [{ role: "ELB", product_id: "panel-s20-elb", quantity: 4 }, { role: "TEE", product_id: "panel-s20-tee", quantity: 8 }],
+    cuts: [{ quantity: 4, length_mm: 1200 }, { quantity: 2, length_mm: 600 }],
+    complementary_items: [{ product_id: "comp-wheel", quantity: 4 }],
+  }));
+  assert.equal(savedResponse.status, 200);
+
+  const reloaded = await (await fetch(`${baseUrl}/api/kits/${created.id}`)).json() as any;
+  assert.equal(reloaded.sku, "KIT-KONSOL-01");
+  assert.deepEqual(reloaded.variants[0].cuts.map((cut: any) => [cut.quantity, cut.length_mm]), [[4, 1200], [2, 600]]);
+  assert.equal(reloaded.summary.extra_cost_cents, 17500);
+  assert.equal(reloaded.summary.profit_cents, reloaded.sale_price_cents - reloaded.summary.total_cost_cents);
+
+  const edited = await fetch(`${baseUrl}/api/variants/${variantId}`, json("PUT", {
+    profile_id: "profile-sq20",
+    connectors: [{ role: "ELB", product_id: "panel-s20-elb", quantity: 4 }, { role: "TEE", product_id: "panel-s20-tee", quantity: 8 }],
+    cuts: [{ quantity: 4, length_mm: 1300 }, { quantity: 3, length_mm: 600 }],
+    complementary_items: [{ product_id: "comp-wheel", quantity: 4 }],
+  }));
+  assert.equal(edited.status, 200);
+
+  const copiedResponse = await fetch(`${baseUrl}/api/kits/${created.id}/copy`, json("POST", { sku: "KIT-KONSOL-02" }));
+  assert.equal(copiedResponse.status, 201);
+  const copied = await copiedResponse.json() as any;
+  assert.notEqual(copied.id, created.id);
+  assert.notEqual(copied.variants[0].id, variantId);
+  assert.deepEqual(copied.variants[0].cuts.map((cut: any) => [cut.quantity, cut.length_mm]), [[4, 1300], [3, 600]]);
+  const originalAgain = await (await fetch(`${baseUrl}/api/kits/${created.id}`)).json() as any;
+  assert.equal(originalAgain.name, "Konsol Kit");
+
+  const deleted = await fetch(`${baseUrl}/api/kits/${created.id}`, { method: "DELETE" });
+  assert.equal(deleted.status, 200);
+  assert.equal((await fetch(`${baseUrl}/api/kits/${created.id}`)).status, 404);
+  const listed = await (await fetch(`${baseUrl}/api/kits`)).json() as any[];
+  assert.equal(listed.some((kit) => kit.id === created.id), false);
+  assert.equal(listed.some((kit) => kit.id === copied.id), true);
 });
 
 test("server stores BOM snapshots and recalculates totals", async () => {

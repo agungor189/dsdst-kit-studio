@@ -2,37 +2,64 @@ import crypto from "node:crypto";
 import type Database from "better-sqlite3";
 import express from "express";
 import { z } from "zod";
-import { resolveConnector, validateConnectorSelection } from "../services/compatibility.js";
+import { resolveConnector } from "../services/compatibility.js";
 import { savePricingSnapshot, variantDetail } from "../services/variantService.js";
 
 const connectorInput = z.object({ role: z.string().min(2), quantity: z.number().int().positive(), product_id: z.string().optional() });
 const cutInput = z.object({ quantity: z.number().int().positive(), length_mm: z.number().int().positive(), label: z.string().optional() });
 const complementaryInput = z.object({ product_id: z.string().min(1), quantity: z.number().positive() });
 const variantInput = z.object({ profile_id: z.string().min(1), connectors: z.array(connectorInput), cuts: z.array(cutInput), complementary_items: z.array(complementaryInput) });
+const kitMetaInput = z.object({
+  name: z.string().min(2), sku: z.string().trim().min(1).nullable().optional(), description: z.string().optional(),
+  sale_price_cents: z.number().int().nonnegative().default(0), labor_cost_cents: z.number().int().nonnegative().default(0),
+  packaging_cost_cents: z.number().int().nonnegative().default(0), other_cost_cents: z.number().int().nonnegative().default(0),
+});
 
 function kitDetail(db: Database.Database, kitId: string) {
-  const kit = db.prepare("SELECT * FROM kits WHERE id=?").get(kitId) as any;
+  const kit = db.prepare("SELECT * FROM kits WHERE id=? AND deleted_at IS NULL").get(kitId) as any;
   if (!kit) return null;
   kit.variants = (db.prepare("SELECT id FROM kit_variants WHERE kit_id=? ORDER BY created_at").all(kitId) as { id: string }[]).map((row) => variantDetail(db, row.id));
+  const variant = kit.variants[0];
+  kit.summary = variant?.summary || { product_cost_cents: 0, extra_cost_cents: Number(kit.labor_cost_cents || 0) + Number(kit.packaging_cost_cents || 0) + Number(kit.other_cost_cents || 0), total_cost_cents: 0, sale_price_cents: Number(kit.sale_price_cents || 0), profit_cents: Number(kit.sale_price_cents || 0), margin_percent: 0 };
+  kit.thumbnail = variant?.connectors.find((line: any) => line.current_image)?.product_id
+    ? `/api/panel/products/${encodeURIComponent(variant.connectors.find((line: any) => line.current_image).product_id)}/image`
+    : variant?.profile?.current_image
+      ? variant.profile.current_image
+    : variant?.complementary_items.find((line: any) => line.current_image)?.complementary_product_id
+      ? (variant.complementary_items.find((line: any) => line.current_image).catalog_source === "PANEL"
+          ? `/api/panel/complementary-products/${encodeURIComponent(variant.complementary_items.find((line: any) => line.current_image).complementary_product_id)}/image`
+          : variant.complementary_items.find((line: any) => line.current_image).current_image)
+      : null;
   return kit;
 }
 
 export function createKitsRouter(db: Database.Database) {
   const router = express.Router();
 
-  router.get("/kits", (_req, res) => res.json((db.prepare("SELECT id FROM kits ORDER BY updated_at DESC").all() as { id: string }[]).map((row) => kitDetail(db, row.id))));
+  router.get("/kits", (_req, res) => res.json((db.prepare("SELECT id FROM kits WHERE deleted_at IS NULL ORDER BY updated_at DESC").all() as { id: string }[]).map((row) => kitDetail(db, row.id))));
   router.get("/kits/:id", (req, res) => { const kit = kitDetail(db, req.params.id); return kit ? res.json(kit) : res.status(404).json({ error: "NOT_FOUND" }); });
 
   router.post("/kits", (req, res) => {
-    const body = z.object({ name: z.string().min(2), description: z.string().optional(), profile_id: z.string().min(1), variant_name: z.string().optional() }).parse(req.body);
+    const body = kitMetaInput.extend({ profile_id: z.string().min(1), variant_name: z.string().optional() }).parse(req.body);
+    if (body.sku && db.prepare("SELECT 1 FROM kits WHERE sku=? COLLATE NOCASE AND deleted_at IS NULL").get(body.sku)) return res.status(409).json({ error: "DUPLICATE_SKU" });
     const profile = db.prepare("SELECT id,name FROM profiles WHERE id=? AND active=1").get(body.profile_id) as any;
     if (!profile) return res.status(400).json({ error: "INVALID_PROFILE" });
     const kitId = crypto.randomUUID(); const variantId = crypto.randomUUID();
     db.transaction(() => {
-      db.prepare("INSERT INTO kits (id,name,description) VALUES (?,?,?)").run(kitId, body.name, body.description ?? null);
+      db.prepare("INSERT INTO kits (id,name,sku,description,sale_price_cents,labor_cost_cents,packaging_cost_cents,other_cost_cents) VALUES (?,?,?,?,?,?,?,?)")
+        .run(kitId, body.name, body.sku || null, body.description ?? null, body.sale_price_cents, body.labor_cost_cents, body.packaging_cost_cents, body.other_cost_cents);
       db.prepare("INSERT INTO kit_variants (id,kit_id,name,profile_id) VALUES (?,?,?,?)").run(variantId, kitId, body.variant_name || profile.name, profile.id);
     })();
     res.status(201).json(kitDetail(db, kitId));
+  });
+
+  router.put("/kits/:id", (req, res) => {
+    const body = kitMetaInput.parse(req.body);
+    const duplicate = body.sku ? db.prepare("SELECT id FROM kits WHERE sku=? COLLATE NOCASE AND id!=? AND deleted_at IS NULL").get(body.sku, req.params.id) : null;
+    if (duplicate) return res.status(409).json({ error: "DUPLICATE_SKU" });
+    const result = db.prepare(`UPDATE kits SET name=?,sku=?,description=?,sale_price_cents=?,labor_cost_cents=?,packaging_cost_cents=?,other_cost_cents=?,updated_at=CURRENT_TIMESTAMP WHERE id=? AND deleted_at IS NULL`)
+      .run(body.name, body.sku || null, body.description ?? null, body.sale_price_cents, body.labor_cost_cents, body.packaging_cost_cents, body.other_cost_cents, req.params.id);
+    return result.changes ? res.json(kitDetail(db, req.params.id)) : res.status(404).json({ error: "NOT_FOUND" });
   });
 
   router.put("/variants/:id", (req, res) => {
@@ -46,17 +73,20 @@ export function createKitsRouter(db: Database.Database) {
     const profile = db.prepare("SELECT * FROM profiles WHERE id=? AND active=1").get(body.profile_id) as any;
     if (!profile) return res.status(400).json({ error: "INVALID_PROFILE" });
     const complementaryLookup = db.prepare("SELECT * FROM complementary_products WHERE id=? AND active=1");
-    for (const line of body.connectors) {
-      if (line.product_id && !validateConnectorSelection(db, body.profile_id, line.product_id)) {
-        return res.status(400).json({ error: "INCOMPATIBLE_CONNECTOR", product_id: line.product_id });
-      }
-    }
     const resolved = body.connectors.map((line) => {
-      const connector = line.product_id ? db.prepare("SELECT pc.*,cc.connector_role FROM panel_connector_cache pc JOIN connector_compatibility cc ON cc.product_id=pc.product_id WHERE pc.product_id=?").get(line.product_id) as any : resolveConnector(db, line.role, body.profile_id) as any;
-      if (connector && connector.connector_role !== line.role) throw new Error(`ROLE_MISMATCH:${line.role}`);
+      const connector = line.product_id ? db.prepare("SELECT pc.*,cc.connector_role,cc.compatibility_group FROM panel_connector_cache pc LEFT JOIN connector_compatibility cc ON cc.product_id=pc.product_id WHERE pc.product_id=? AND pc.catalog_active=1").get(line.product_id) as any : resolveConnector(db, line.role, body.profile_id) as any;
+      if (line.product_id && !connector) throw new Error(`INVALID_CONNECTOR:${line.product_id}`);
+      if (connector?.connector_role && connector.connector_role !== line.role) throw new Error(`ROLE_MISMATCH:${line.role}`);
+      if (connector && !connector.connector_role) connector.connector_role = line.role;
       return { ...line, connector };
     });
     const missing = resolved.filter((line) => !line.connector).map((line) => line.role);
+    const profileSpec = db.prepare("SELECT ps.compatibility_group FROM profiles p JOIN profile_specs ps ON ps.id=p.spec_id WHERE p.id=?").get(body.profile_id) as any;
+    const compatibilityWarnings = resolved.flatMap((line) => {
+      if (!line.connector) return [`${line.role}: uygun ürün eşlemesi bulunamadı`];
+      if (!line.connector.compatibility_group) return [`${line.connector.sku}: uyumluluk bilgisi eksik`];
+      return line.connector.compatibility_group === profileSpec.compatibility_group ? [] : [`${line.connector.sku}: ${line.connector.compatibility_group}, profil ${profileSpec.compatibility_group}`];
+    });
     const complements = body.complementary_items.map((line) => {
       const product = complementaryLookup.get(line.product_id) as any;
       if (!product) throw new Error(`INVALID_COMPLEMENTARY:${line.product_id}`);
@@ -64,7 +94,7 @@ export function createKitsRouter(db: Database.Database) {
       return { ...line, product };
     });
     db.transaction(() => {
-      db.prepare("UPDATE kit_variants SET profile_id=?,status=?,missing_mappings_json=?,updated_at=CURRENT_TIMESTAMP WHERE id=?").run(body.profile_id, missing.length ? "INCOMPLETE" : "DRAFT", JSON.stringify(missing), req.params.id);
+      db.prepare("UPDATE kit_variants SET profile_id=?,status=?,missing_mappings_json=?,compatibility_warnings_json=?,updated_at=CURRENT_TIMESTAMP WHERE id=?").run(body.profile_id, missing.length ? "INCOMPLETE" : "DRAFT", JSON.stringify(missing), JSON.stringify(compatibilityWarnings), req.params.id);
       db.prepare("DELETE FROM kit_variant_connectors WHERE variant_id=?").run(req.params.id);
       db.prepare("DELETE FROM kit_variant_complementary_items WHERE variant_id=?").run(req.params.id);
       const oldProfile = db.prepare("SELECT id FROM kit_variant_profiles WHERE variant_id=?").get(req.params.id) as any;
@@ -85,6 +115,45 @@ export function createKitsRouter(db: Database.Database) {
     const detail = variantDetail(db, req.params.id)!;
     savePricingSnapshot(db, req.params.id, "BOM_SAVED");
     res.json(detail);
+  });
+
+  router.post("/kits/:id/copy", (req, res) => {
+    const source = kitDetail(db, req.params.id);
+    if (!source || !source.variants[0]) return res.status(404).json({ error: "NOT_FOUND" });
+    const input = z.object({ name: z.string().min(2).optional(), sku: z.string().trim().min(1).nullable().optional() }).parse(req.body || {});
+    if (input.sku && db.prepare("SELECT 1 FROM kits WHERE sku=? COLLATE NOCASE AND deleted_at IS NULL").get(input.sku)) return res.status(409).json({ error: "DUPLICATE_SKU" });
+    let copySku = input.sku || null;
+    if (!copySku && source.sku) {
+      let sequence = 1;
+      do { copySku = `${source.sku}-COPY${sequence}`; sequence++; }
+      while (db.prepare("SELECT 1 FROM kits WHERE sku=? COLLATE NOCASE AND deleted_at IS NULL").get(copySku));
+    }
+    const sourceVariant = source.variants[0];
+    const kitId = crypto.randomUUID(); const variantId = crypto.randomUUID();
+    db.transaction(() => {
+      db.prepare(`INSERT INTO kits (id,name,sku,description,status,sale_price_cents,labor_cost_cents,packaging_cost_cents,other_cost_cents)
+        VALUES (?,?,?,?,?,?,?,?,?)`).run(kitId, input.name || `${source.name} - Kopya`, copySku, source.description, "DRAFT", source.sale_price_cents, source.labor_cost_cents, source.packaging_cost_cents, source.other_cost_cents);
+      db.prepare(`INSERT INTO kit_variants (id,kit_id,name,profile_id,status,missing_mappings_json,compatibility_warnings_json)
+        VALUES (?,?,?,?,?,?,?)`).run(variantId, kitId, sourceVariant.name, sourceVariant.profile_id, "DRAFT", sourceVariant.missing_mappings_json, sourceVariant.compatibility_warnings_json);
+      const addConnector = db.prepare(`INSERT INTO kit_variant_connectors (id,variant_id,connector_role,product_id,quantity,purchase_price_snapshot_cents,sale_price_snapshot_cents,product_name_snapshot,sku_snapshot) VALUES (?,?,?,?,?,?,?,?,?)`);
+      for (const line of sourceVariant.connectors) addConnector.run(crypto.randomUUID(), variantId, line.connector_role, line.product_id, line.quantity, line.purchase_price_snapshot_cents, line.sale_price_snapshot_cents, line.product_name_snapshot, line.sku_snapshot);
+      if (sourceVariant.profile) {
+        const profileLineId = crypto.randomUUID();
+        db.prepare(`INSERT INTO kit_variant_profiles (id,variant_id,profile_id,purchase_price_snapshot_cents,sale_price_snapshot_cents,weight_per_meter_snapshot_kg) VALUES (?,?,?,?,?,?)`)
+          .run(profileLineId, variantId, sourceVariant.profile.profile_id, sourceVariant.profile.purchase_price_snapshot_cents, sourceVariant.profile.sale_price_snapshot_cents, sourceVariant.profile.weight_per_meter_snapshot_kg);
+        const addCut = db.prepare("INSERT INTO kit_variant_profile_cuts (id,variant_profile_id,quantity,length_mm,label) VALUES (?,?,?,?,?)");
+        for (const cut of sourceVariant.cuts) addCut.run(crypto.randomUUID(), profileLineId, cut.quantity, cut.length_mm, cut.label);
+      }
+      const addComplement = db.prepare(`INSERT INTO kit_variant_complementary_items (id,variant_id,complementary_product_id,quantity_milli,purchase_price_snapshot_cents,sale_price_snapshot_cents,product_name_snapshot,unit_type_snapshot) VALUES (?,?,?,?,?,?,?,?)`);
+      for (const line of sourceVariant.complementary_items) addComplement.run(crypto.randomUUID(), variantId, line.complementary_product_id, line.quantity_milli, line.purchase_price_snapshot_cents, line.sale_price_snapshot_cents, line.product_name_snapshot, line.unit_type_snapshot);
+    })();
+    savePricingSnapshot(db, variantId, "KIT_COPIED");
+    res.status(201).json(kitDetail(db, kitId));
+  });
+
+  router.delete("/kits/:id", (req, res) => {
+    const result = db.prepare("UPDATE kits SET deleted_at=CURRENT_TIMESTAMP,updated_at=CURRENT_TIMESTAMP WHERE id=? AND deleted_at IS NULL").run(req.params.id);
+    return result.changes ? res.json({ success: true }) : res.status(404).json({ error: "NOT_FOUND" });
   });
 
   router.post("/variants/:id/approve", (req, res) => {

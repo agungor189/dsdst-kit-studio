@@ -10,14 +10,25 @@ before(() => { process.env.PANEL_API_URL = "https://panel.test"; process.env.PAN
 after(() => { db.close(); process.env.PANEL_API_URL = previous.url; process.env.PANEL_API_KEY = previous.key; });
 
 test("sync persists resolved and unresolved Panel products with status counts", async () => {
-  const fakeFetch = async () => new Response(JSON.stringify({ success: true, data: [
-    { id: "real-1", sku: "AL-X-ELB", name_tr: "Dirsek", form_code: "ELB", tube_type_code: "SQ", normalized_pipe_size: "40x40", sale_price: 10 },
-    { id: "real-2", sku: "UNKNOWN", name_tr: "Bekleyen", sale_price: 5 },
-  ] }), { status: 200, headers: { "content-type": "application/json" } });
+  const fakeFetch = async (input: string | URL | Request) => {
+    const url = String(input);
+    const data = url.endsWith("/profiles")
+      ? [{ id: "panel-profile-1", name: "Panel 30x30", shape: "Kare", dimension: "30x30", material: "Alüminyum", effective_price_per_meter: 90 }]
+      : url.endsWith("/complementary-products")
+        ? [{ id: "panel-comp-1", name: "Panel Kapak", unit: "adet", purchase_price: 12 }]
+        : [
+            { id: "real-1", sku: "AL-X-ELB", name_tr: "Dirsek", form_code: "ELB", tube_type_code: "SQ", normalized_pipe_size: "40x40", sale_price: 10 },
+            { id: "real-2", sku: "UNKNOWN", name_tr: "Bekleyen", sale_price: 5 },
+          ];
+    return new Response(JSON.stringify({ success: true, data }), { status: 200, headers: { "content-type": "application/json" } });
+  };
   const result = await syncPanelConnectors(db, fakeFetch as typeof fetch);
   assert.deepEqual({ synced: result.synced, compatible: result.compatible, unresolved: result.unresolved }, { synced: 2, compatible: 1, unresolved: 1 });
   const stats = getPanelSyncStats(db);
   assert.equal(stats.panelReachable, true); assert.equal(stats.connectorCount, 2); assert.equal(stats.unresolvedCount, 1);
+  assert.equal(stats.profileCount, 1); assert.equal(stats.complementCount, 1);
+  assert.equal((db.prepare("SELECT compatibility_group FROM profile_specs JOIN profiles ON profiles.spec_id=profile_specs.id WHERE profiles.id='panel-profile-1'").get() as any).compatibility_group, "SQ-30X30");
+  assert.equal((db.prepare("SELECT purchase_unit_price_cents FROM complementary_products WHERE id='panel-comp-1'").get() as any).purchase_unit_price_cents, 1200);
   assert.equal((db.prepare("SELECT compatibility_group FROM connector_compatibility WHERE product_id='real-1'").get() as any).compatibility_group, "SQ-40X40");
 });
 

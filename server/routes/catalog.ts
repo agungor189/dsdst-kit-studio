@@ -15,7 +15,7 @@ function profileRows(db: Database.Database) {
   return db.prepare(`SELECT p.*, ps.shape, ps.material, ps.width_mm, ps.height_mm, ps.outside_diameter_mm,
     ps.nominal_size, ps.wall_thickness_mm, ps.compatibility_group, s.name supplier_name
     FROM profiles p JOIN profile_specs ps ON ps.id=p.spec_id
-    LEFT JOIN suppliers s ON s.id=p.supplier_id WHERE p.active=1 ORDER BY p.name`).all();
+    LEFT JOIN suppliers s ON s.id=p.supplier_id WHERE p.active=1 AND COALESCE(p.catalog_active,1)=1 ORDER BY p.name`).all();
 }
 
 export function validImage(buffer: Buffer, mimetype: string) {
@@ -32,7 +32,7 @@ export function createCatalogRouter(db: Database.Database) {
     res.json({
       user: req.user,
       profiles: profileRows(db),
-      complementaryProducts: db.prepare("SELECT cp.*, s.name supplier_name FROM complementary_products cp LEFT JOIN suppliers s ON s.id=cp.supplier_id WHERE cp.active=1 ORDER BY cp.name").all(),
+      complementaryProducts: db.prepare("SELECT cp.*, s.name supplier_name FROM complementary_products cp LEFT JOIN suppliers s ON s.id=cp.supplier_id WHERE cp.active=1 AND COALESCE(cp.catalog_active,1)=1 ORDER BY cp.name").all(),
       connectors: db.prepare(`SELECT pc.*, cc.connector_role, cc.compatibility_group, cc.profile_shape
         FROM panel_connector_cache pc LEFT JOIN connector_compatibility cc ON cc.product_id=pc.product_id
         WHERE pc.catalog_active=1 ORDER BY pc.compatibility_status, cc.connector_role, pc.sku`).all(),
@@ -48,6 +48,15 @@ export function createCatalogRouter(db: Database.Database) {
 
   router.get("/panel/products/:id/image", async (req, res) => {
     const row = db.prepare("SELECT image FROM panel_connector_cache WHERE product_id=? AND catalog_active=1").get(req.params.id) as { image?: string } | undefined;
+    if (!row?.image) return res.status(404).json({ error: "IMAGE_NOT_FOUND" });
+    try {
+      const image = await fetchPanelProductImage(req.params.id, row.image);
+      res.set({ "content-type": image.type, "cache-control": "private, max-age=3600" }).send(image.buffer);
+    } catch { res.status(502).json({ error: "PANEL_IMAGE_UNAVAILABLE" }); }
+  });
+
+  router.get("/panel/complementary-products/:id/image", async (req, res) => {
+    const row = db.prepare("SELECT image_path image FROM complementary_products WHERE id=? AND catalog_source='PANEL' AND catalog_active=1").get(req.params.id) as { image?: string } | undefined;
     if (!row?.image) return res.status(404).json({ error: "IMAGE_NOT_FOUND" });
     try {
       const image = await fetchPanelProductImage(req.params.id, row.image);
@@ -82,7 +91,7 @@ export function createCatalogRouter(db: Database.Database) {
     res.status(201).json(profileRows(db).find((row: any) => row.id === id));
   });
 
-  router.get("/complementary-products", (_req, res) => res.json(db.prepare("SELECT * FROM complementary_products ORDER BY active DESC,name").all()));
+  router.get("/complementary-products", (_req, res) => res.json(db.prepare("SELECT * FROM complementary_products WHERE COALESCE(catalog_active,1)=1 ORDER BY active DESC,name").all()));
   router.post("/complementary-products", (req, res) => {
     const parsed = z.object({ name: z.string().min(2), sku_optional: z.string().optional(), description: z.string().optional(), unit_type: z.enum(["PIECE", "METER", "M2"]), purchase_unit_price_cents: money, sale_unit_price_cents: money, supplier_id: z.string().optional(), website_url_optional: z.string().url().optional().or(z.literal("")), notes: z.string().optional() }).parse(req.body);
     const id = crypto.randomUUID();
