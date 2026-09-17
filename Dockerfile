@@ -9,9 +9,11 @@ RUN npm run build
 FROM node:22-alpine AS production
 WORKDIR /app
 ENV NODE_ENV=production PORT=3012 DB_PATH=/data/dsdst-kit-studio.db UPLOAD_DIR=/app/uploads
+RUN apk upgrade --no-cache
 COPY --chown=node:node --from=builder /app/package*.json ./
 COPY --chown=node:node --from=builder /app/node_modules ./node_modules
-RUN npm prune --omit=dev --ignore-scripts
+RUN npm prune --omit=dev --ignore-scripts \
+  && rm -rf /usr/local/lib/node_modules/npm /usr/local/bin/npm /usr/local/bin/npx
 COPY --chown=node:node --from=builder /app/dist ./dist
 COPY --chown=node:node --from=builder /app/dist-server ./dist-server
 COPY --chown=node:node --from=builder /app/server/db/migrations ./server/db/migrations
