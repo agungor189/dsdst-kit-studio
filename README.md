@@ -51,6 +51,8 @@ npm run build
 
 Panel yönetim ekranından yalnız `kit-catalog:read` iznine sahip bir API key oluşturun. Bu anahtarı Kit Studio `.env` dosyasındaki `PANEL_API_KEY` alanına, Panel taban adresini `PANEL_API_URL` alanına yazın. API key yalnız Kit Studio sunucusunda kalır. Kullanıcılar mevcut Panel kullanıcı adı/parolasıyla giriş yapar; Panel JWT’si `HttpOnly`, `SameSite=Lax` ve production’da `Secure` çerezde tutulur ve her API isteğinde Panel `/api/auth/me` ile doğrulanır.
 
+Kit Studio login proxy'si Panel'in limiter'ından bağımsızdır: başarısız denemeleri IP + normalize kullanıcı adı başına 15 dakikada 10 deneme ile sınırlar. Güvenilir tek reverse proxy kullanılıyorsa gerçek istemci IP'si için `TRUST_PROXY_HOPS=1` ayarlanabilir; aksi halde `0` bırakılır.
+
 Panel ile katalog senkronizasyonu oturum çereziyle yapılır:
 
 ```bash
@@ -66,6 +68,7 @@ Uygulama açılışta otomatik senkronizasyon dener. Panel erişilemezse son ba�
 
 ```bash
 cp .env.example .env
+docker network create dsdst-internal # sunucuda yalnız ilk kurulumda
 docker compose build
 docker compose up -d
 docker compose exec kit-studio node dist-server/server/db/migrate-cli.js
@@ -82,6 +85,7 @@ docker compose exec kit-studio node dist-server/server/db/migrate-cli.js
 ```
 
 Kalıcı veriler varsayılan olarak `./data` ve `./uploads` altındadır. Sunucuda mutlak dizinler için `KIT_STUDIO_DATA_DIR` ve `KIT_STUDIO_UPLOADS_DIR` kullanılabilir.
+Container `node` kullanıcısıyla, salt-okunur root filesystem, `no-new-privileges`, düşürülmüş Linux capability'leri ve sınırlı `/tmp` tmpfs ile çalışır. Bind-mount dizinleri container içindeki node kullanıcısı (UID 1000) tarafından yazılabilir olmalıdır.
 
 ## Business rule özeti
 

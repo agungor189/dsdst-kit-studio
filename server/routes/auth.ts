@@ -2,6 +2,7 @@ import express from "express";
 import { z } from "zod";
 import { clearSessionCookieOptions, createAppAuth, SESSION_COOKIE, sessionCookieOptions } from "../middleware/appAuth.js";
 import type { PanelAuthClient } from "../services/panelAuthClient.js";
+import { createLoginRateLimit, type LoginRateLimitOptions } from "../middleware/loginRateLimit.js";
 
 function authFailure(res: express.Response, error: unknown) {
   const status = Number((error as any)?.status || 0);
@@ -9,10 +10,10 @@ function authFailure(res: express.Response, error: unknown) {
   return res.status(502).json({ error: "PANEL_AUTH_UNAVAILABLE" });
 }
 
-export function createAuthRouter(client: PanelAuthClient) {
+export function createAuthRouter(client: PanelAuthClient, rateLimitOptions?: LoginRateLimitOptions) {
   const router = express.Router();
   const authenticated = createAppAuth(client);
-  router.post("/login", async (req, res) => {
+  router.post("/login", createLoginRateLimit(rateLimitOptions), async (req, res) => {
     const parsed = z.object({ username: z.string().min(1), password: z.string().min(1) }).safeParse(req.body);
     if (!parsed.success) return res.status(400).json({ error: "VALIDATION_ERROR", issues: parsed.error.issues });
     const { username, password } = parsed.data;

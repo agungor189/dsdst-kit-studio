@@ -19,7 +19,7 @@ const client: PanelAuthClient = {
 };
 
 before(async () => {
-  db = openDatabase(":memory:"); server = createApp(db, { panelAuthClient: client }).listen(0);
+  db = openDatabase(":memory:"); server = createApp(db, { panelAuthClient: client, loginRateLimit: { maxAttempts: 2, windowMs: 60_000 } }).listen(0);
   await new Promise<void>((resolve) => server.once("listening", resolve));
   baseUrl = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
 });
@@ -62,4 +62,19 @@ test("logout clears the session cookie", async () => {
   const response = await fetch(`${baseUrl}/api/auth/logout`, { method: "POST" });
   assert.equal(response.status, 204);
   assert.match(response.headers.get("set-cookie") || "", /dsdst_kit_session=;/);
+});
+
+test("login proxy limits failures by IP and normalized username", async () => {
+  const attempt = (username: string) => fetch(`${baseUrl}/api/auth/login`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ username, password: "wrong" }),
+  });
+  assert.equal((await attempt("Nobody")).status, 401);
+  assert.equal((await attempt("nobody")).status, 401);
+  const blocked = await attempt("NOBODY");
+  assert.equal(blocked.status, 429);
+  assert.equal((await blocked.json() as any).error, "TOO_MANY_REQUESTS");
+  assert.ok(blocked.headers.get("retry-after"));
+  assert.equal((await attempt("SomebodyElse")).status, 401);
 });

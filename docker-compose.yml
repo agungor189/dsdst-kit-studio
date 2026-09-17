@@ -3,6 +3,13 @@ services:
     build: .
     container_name: dsdst-kit-studio
     restart: unless-stopped
+    read_only: true
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=64m
     ports:
       - "3012:3012"
     environment:
@@ -13,8 +20,16 @@ services:
       PANEL_API_URL: ${PANEL_API_URL}
       PANEL_API_KEY: ${PANEL_API_KEY}
       ALLOWED_ORIGINS: ${ALLOWED_ORIGINS:-http://localhost:3012}
+      TRUST_PROXY_HOPS: ${TRUST_PROXY_HOPS:-0}
     volumes:
       - ${KIT_STUDIO_DATA_DIR:-./data}:/data
       - ${KIT_STUDIO_UPLOADS_DIR:-./uploads}:/app/uploads
     extra_hosts:
       - "host.docker.internal:host-gateway"
+    networks:
+      - dsdst-internal
+
+networks:
+  dsdst-internal:
+    name: dsdst-internal
+    external: true
