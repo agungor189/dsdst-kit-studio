@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { after, before, test } from "node:test";
 import type Database from "better-sqlite3";
 import { openDatabase } from "../db/index.js";
-import { compatibleConnectorsForProfile, compatibleProfilesForConnector, isCompatible, resolveConnector, validateConnectorSelection } from "./compatibility.js";
+import { canonicalSizeKey, compatibleConnectorsForProfile, compatibleProfilesForConnector, isCompatible, resolveConnector, validateConnectorSelection } from "./compatibility.js";
 
 let db: Database.Database;
 before(() => { db = openDatabase(":memory:"); });
@@ -38,6 +38,27 @@ test("resolver maps roles through metadata rather than parsing SKU", () => {
   assert.equal(resolveConnector(db, "3W", "profile-rd337"), null);
 });
 
-test("wall thickness outside declared range is incompatible", () => {
-  assert.equal(isCompatible({ connector_role: "ELB", profile_shape: "SQUARE", profile_width_mm: 20, profile_height_mm: 20, outside_diameter_mm: null, nominal_size: null, compatible_material_group: "ALUMINUM", wall_min_mm: 1, wall_max_mm: 2, compatibility_group: "SQ-20" }, { shape: "SQUARE", material: "Aluminum", width_mm: 20, height_mm: 20, outside_diameter_mm: null, nominal_size: null, wall_thickness_mm: 3, compatibility_group: "SQ-20" }), false);
+test("wall thickness outside the advisory range does not create hard incompatibility", () => {
+  assert.equal(isCompatible({ connector_role: "ELB", profile_shape: "SQUARE", profile_width_mm: 20, profile_height_mm: 20, outside_diameter_mm: null, nominal_size: null, compatible_material_group: "ALUMINUM", wall_min_mm: 1, wall_max_mm: 2, compatibility_group: "SQ-20" }, { shape: "SQUARE", material: "Aluminum", width_mm: 20, height_mm: 20, outside_diameter_mm: null, nominal_size: null, wall_thickness_mm: 3, compatibility_group: "SQ-20" }), true);
+});
+
+test("R100 accepts both 1.5 mm and 2 mm wall profiles with the same 33.7 mm outside diameter", () => {
+  const connector = { connector_role: "ELB", profile_shape: "ROUND", profile_width_mm: null, profile_height_mm: null, outside_diameter_mm: 33.7, nominal_size: '1"', compatible_material_group: "ALUMINUM", wall_min_mm: 1.8, wall_max_mm: 1.8, compatibility_group: "RD-33.7" };
+  const profile = (wall_thickness_mm: number) => ({ shape: "ROUND", material: "Aluminum", width_mm: null, height_mm: null, outside_diameter_mm: 33.7, nominal_size: '1"', wall_thickness_mm, compatibility_group: "R100" });
+  assert.equal(isCompatible(connector, profile(1.5)), true);
+  assert.equal(isCompatible(connector, profile(2)), true);
+});
+
+test("R100, one inch, 33.7 mm and RD-33.7 resolve to the same physical size", () => {
+  assert.equal(canonicalSizeKey({ profile_shape: "ROUND", profile_width_mm: null, profile_height_mm: null, outside_diameter_mm: null, nominal_size: "R100", compatibility_group: "R100" }), "ROUND:33.7");
+  assert.equal(canonicalSizeKey({ shape: "ROUND", width_mm: null, height_mm: null, outside_diameter_mm: null, nominal_size: "1 inch", compatibility_group: "legacy-inch" }), "ROUND:33.7");
+  assert.equal(canonicalSizeKey({ shape: "ROUND", width_mm: null, height_mm: null, outside_diameter_mm: null, nominal_size: "33.7 mm", compatibility_group: "legacy-mm" }), "ROUND:33.7");
+  assert.equal(canonicalSizeKey({ shape: "ROUND", width_mm: null, height_mm: null, outside_diameter_mm: null, nominal_size: null, compatibility_group: "RD-33.7" }), "ROUND:33.7");
+});
+
+test("physical compatibility permits different connector and profile materials", () => {
+  assert.equal(isCompatible(
+    { connector_role: "ELB", profile_shape: "ROUND", profile_width_mm: null, profile_height_mm: null, outside_diameter_mm: 33.7, nominal_size: '1"', compatible_material_group: "ALUMINUM", wall_min_mm: 1, wall_max_mm: 4, compatibility_group: "RD-33.7" },
+    { shape: "ROUND", material: "PPR", width_mm: null, height_mm: null, outside_diameter_mm: 33.7, nominal_size: "1 inch", wall_thickness_mm: 2, compatibility_group: "R100" },
+  ), true);
 });

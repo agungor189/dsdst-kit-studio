@@ -103,6 +103,34 @@ test("live quote uses catalog prices, markup, extras and weight without a kit sa
   assert.equal(quote.weight_complete, true);
 });
 
+test("connector-only kits can be quoted and saved before a profile is selected", async () => {
+  const quoteResponse = await fetch(`${baseUrl}/api/pricing/quote`, json("POST", {
+    profile_id: null, connectors: [{ role: "ELB", product_id: "panel-r100-elb", quantity: 4 }, { role: "TEE", product_id: "panel-r100-tee", quantity: 4 }],
+    cuts: [], complementary_items: [],
+  }));
+  assert.equal(quoteResponse.status, 200); const quote = await quoteResponse.json() as any;
+  assert.equal(quote.profile_cost_cents, 0);
+  assert.equal(quote.connector_cost_cents, 95_200);
+  assert.equal(quote.connector_sale_cents, 148_000);
+  assert.equal(quote.connector_profit_cents, 52_800);
+
+  const createdResponse = await fetch(`${baseUrl}/api/kits`, json("POST", { name: "Önce Bağlantı Kiti", profile_id: null }));
+  assert.equal(createdResponse.status, 201); const created = await createdResponse.json() as any;
+  const savedResponse = await fetch(`${baseUrl}/api/variants/${created.variants[0].id}`, json("PUT", {
+    profile_id: null, connectors: [{ role: "ELB", product_id: "panel-r100-elb", quantity: 4 }], cuts: [], complementary_items: [],
+  }));
+  assert.equal(savedResponse.status, 200); const saved = await savedResponse.json() as any;
+  assert.equal(saved.profile_id, null);
+  assert.equal(saved.profile, undefined);
+  assert.equal(saved.pricing.connector_sale_cents, 74_000);
+
+  const mixedSize = await fetch(`${baseUrl}/api/variants/${created.variants[0].id}`, json("PUT", {
+    profile_id: null, connectors: [{ role: "ELB", product_id: "panel-r100-elb", quantity: 1 }, { role: "TEE", product_id: "panel-s20-tee", quantity: 1 }], cuts: [], complementary_items: [],
+  }));
+  assert.equal(mixedSize.status, 409);
+  assert.equal((await mixedSize.json() as any).error, "INCOMPATIBLE_CONNECTOR");
+});
+
 test("variant conversion preserves roles, quantities and cuts while resolving new SKUs", async () => {
   const created = await (await fetch(`${baseUrl}/api/kits`, json("POST", { name: "Varyantlı Raf", profile_id: "profile-sq20" }))).json() as any;
   const sourceId = created.variants[0].id;
