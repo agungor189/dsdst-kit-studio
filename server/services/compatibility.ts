@@ -62,8 +62,6 @@ export function isCompatible(connector: ConnectorCompatibility, profile: Profile
   const connectorKey = canonicalSizeKey(connector); const profileKey = canonicalSizeKey(profile);
   if (!connectorKey || !profileKey || connectorKey !== profileKey) return false;
   if (connector.profile_shape === "ROUND" && connector.outside_diameter_mm != null && profile.outside_diameter_mm != null && !close(connector.outside_diameter_mm, profile.outside_diameter_mm)) return false;
-  if (profile.wall_thickness_mm != null && connector.wall_min_mm != null && profile.wall_thickness_mm < connector.wall_min_mm) return false;
-  if (profile.wall_thickness_mm != null && connector.wall_max_mm != null && profile.wall_thickness_mm > connector.wall_max_mm) return false;
   return true;
 }
 

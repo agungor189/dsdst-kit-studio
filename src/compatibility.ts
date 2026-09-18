@@ -39,10 +39,8 @@ export function physicalSizeKey(item: Profile | Connector) {
 }
 
 export function profileMatchesConnector(profile: Profile, connector: Connector) {
-  const profileKey = physicalSizeKey(profile); const connectorKey = physicalSizeKey(connector); const wall = profile.wall_thickness_mm;
-  return Boolean(profileKey && connectorKey && profileKey === connectorKey
-    && (wall == null || connector.wall_min_mm == null || wall >= connector.wall_min_mm)
-    && (wall == null || connector.wall_max_mm == null || wall <= connector.wall_max_mm));
+  const profileKey = physicalSizeKey(profile); const connectorKey = physicalSizeKey(connector);
+  return Boolean(profileKey && connectorKey && profileKey === connectorKey);
 }
 
 export function connectorsShareSize(left: Connector, right: Connector) {
