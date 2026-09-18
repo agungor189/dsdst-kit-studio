@@ -6,7 +6,7 @@ import express from "express";
 import multer from "multer";
 import { z } from "zod";
 import { validImage } from "./catalog.js";
-import { resolveConnector } from "../services/compatibility.js";
+import { canonicalSizeKey, isCompatible, resolveConnector } from "../services/compatibility.js";
 import { conversionOptions, deriveKit, previewVariantConversion } from "../services/conversionService.js";
 import { quoteCatalogSelection, savePricingSnapshot, variantDetail } from "../services/variantService.js";
 
@@ -14,7 +14,7 @@ const connectorInput = z.object({ role: z.string().min(2), quantity: z.number().
 const imageUpload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 5 * 1024 * 1024, files: 8 } });
 const cutInput = z.object({ quantity: z.number().int().positive(), length_mm: z.number().int().positive(), label: z.string().optional() });
 const complementaryInput = z.object({ product_id: z.string().min(1), quantity: z.number().positive() });
-const variantBaseInput = z.object({ profile_id: z.string().min(1), connectors: z.array(connectorInput), cuts: z.array(cutInput), complementary_items: z.array(complementaryInput) });
+const variantBaseInput = z.object({ profile_id: z.string().min(1).nullable().optional(), connectors: z.array(connectorInput), cuts: z.array(cutInput), complementary_items: z.array(complementaryInput) });
 const variantInput = variantBaseInput.superRefine((value, context) => {
   const roles = value.connectors.map((line) => line.role);
   if (new Set(roles).size !== roles.length) context.addIssue({ code: "custom", path: ["connectors"], message: "Connector roles must be unique inside one configuration" });
@@ -113,15 +113,15 @@ export function createKitsRouter(db: Database.Database) {
   });
 
   router.post("/kits", (req, res) => {
-    const body = kitMetaInput.extend({ profile_id: z.string().min(1), variant_name: z.string().optional() }).parse(req.body);
+    const body = kitMetaInput.extend({ profile_id: z.string().min(1).nullable().optional(), variant_name: z.string().optional() }).parse(req.body);
     if (body.sku && db.prepare("SELECT 1 FROM kits WHERE sku=? COLLATE NOCASE AND deleted_at IS NULL").get(body.sku)) return res.status(409).json({ error: "DUPLICATE_SKU" });
-    const profile = db.prepare("SELECT id,name FROM profiles WHERE id=? AND active=1").get(body.profile_id) as any;
-    if (!profile) return res.status(400).json({ error: "INVALID_PROFILE" });
+    const profile = body.profile_id ? db.prepare("SELECT id,name FROM profiles WHERE id=? AND active=1").get(body.profile_id) as any : null;
+    if (body.profile_id && !profile) return res.status(400).json({ error: "INVALID_PROFILE" });
     const kitId = crypto.randomUUID(); const variantId = crypto.randomUUID();
     db.transaction(() => {
       db.prepare("INSERT INTO kits (id,name,sku,description,sale_price_cents,labor_cost_cents,packaging_cost_cents,other_cost_cents) VALUES (?,?,?,?,?,?,?,?)")
         .run(kitId, body.name, body.sku || null, body.description ?? null, 0, body.labor_cost_cents, body.packaging_cost_cents, body.other_cost_cents);
-      db.prepare("INSERT INTO kit_variants (id,kit_id,name,profile_id) VALUES (?,?,?,?)").run(variantId, kitId, body.variant_name || profile.name, profile.id);
+      db.prepare("INSERT INTO kit_variants (id,kit_id,name,profile_id) VALUES (?,?,?,?)").run(variantId, kitId, body.variant_name || profile?.name || "Ana varyant", profile?.id || null);
     })();
     res.status(201).json(kitDetail(db, kitId));
   });
@@ -143,23 +143,26 @@ export function createKitsRouter(db: Database.Database) {
     const variant = db.prepare("SELECT id,kit_id,status FROM kit_variants WHERE id=?").get(req.params.id) as any;
     if (!variant) return res.status(404).json({ error: "NOT_FOUND" });
     if (variant.status === "APPROVED") return res.status(409).json({ error: "APPROVED_VARIANT_REQUIRES_NEW_VERSION" });
-    const profile = db.prepare("SELECT * FROM profiles WHERE id=? AND active=1").get(body.profile_id) as any;
-    if (!profile) return res.status(400).json({ error: "INVALID_PROFILE" });
-    if (body.cuts.some((cut) => cut.length_mm > Number(profile.raw_length_mm))) return res.status(400).json({ error: "CUT_LONGER_THAN_RAW_PROFILE" });
+    const profile = body.profile_id ? db.prepare("SELECT * FROM profiles WHERE id=? AND active=1").get(body.profile_id) as any : null;
+    if (body.profile_id && !profile) return res.status(400).json({ error: "INVALID_PROFILE" });
+    if (!profile && body.cuts.length) return res.status(400).json({ error: "PROFILE_REQUIRED_FOR_CUTS" });
+    if (profile && body.cuts.some((cut) => cut.length_mm > Number(profile.raw_length_mm))) return res.status(400).json({ error: "CUT_LONGER_THAN_RAW_PROFILE" });
     const complementaryLookup = db.prepare("SELECT * FROM complementary_products WHERE id=? AND active=1");
     const resolved = body.connectors.map((line) => {
-      const connector = line.product_id ? db.prepare("SELECT pc.*,cc.connector_role,cc.compatibility_group FROM panel_connector_cache pc LEFT JOIN connector_compatibility cc ON cc.product_id=pc.product_id WHERE pc.product_id=? AND pc.catalog_active=1").get(line.product_id) as any : resolveConnector(db, line.role, body.profile_id) as any;
+      const connector = line.product_id ? db.prepare("SELECT pc.*,cc.connector_role,cc.compatibility_group,cc.profile_shape,cc.profile_width_mm,cc.profile_height_mm,cc.outside_diameter_mm,cc.nominal_size,cc.compatible_material_group,cc.wall_min_mm,cc.wall_max_mm FROM panel_connector_cache pc LEFT JOIN connector_compatibility cc ON cc.product_id=pc.product_id WHERE pc.product_id=? AND pc.catalog_active=1").get(line.product_id) as any : body.profile_id ? resolveConnector(db, line.role, body.profile_id) as any : null;
       if (line.product_id && !connector) throw new Error(`INVALID_CONNECTOR:${line.product_id}`);
       if (connector?.connector_role && connector.connector_role !== line.role) throw new Error(`ROLE_MISMATCH:${line.role}`);
       if (connector && !connector.connector_role) connector.connector_role = line.role;
       return { ...line, connector };
     });
     const missing = resolved.filter((line) => !line.connector).map((line) => line.role);
-    const profileSpec = db.prepare("SELECT COALESCE(ps.size_compatibility_group,ps.compatibility_group) compatibility_group FROM profiles p JOIN profile_specs ps ON ps.id=p.spec_id WHERE p.id=?").get(body.profile_id) as any;
+    const profileSpec = body.profile_id ? db.prepare("SELECT ps.shape,ps.material,ps.width_mm,ps.height_mm,ps.outside_diameter_mm,ps.nominal_size,ps.wall_thickness_mm,COALESCE(ps.size_compatibility_group,ps.compatibility_group) compatibility_group FROM profiles p JOIN profile_specs ps ON ps.id=p.spec_id WHERE p.id=?").get(body.profile_id) as any : null;
+    const connectorAnchor = resolved.find((line) => line.connector)?.connector;
     const compatibilityWarnings = resolved.flatMap((line) => {
       if (!line.connector) return [`${line.role}: uygun ürün eşlemesi bulunamadı`];
+      if (!profileSpec) return connectorAnchor && canonicalSizeKey(line.connector) !== canonicalSizeKey(connectorAnchor) ? [`${line.connector.sku}: seçili bağlantı ölçüleri birbiriyle uyumlu değil`] : [];
       if (!line.connector.compatibility_group) return [`${line.connector.sku}: uyumluluk bilgisi eksik`];
-      return line.connector.compatibility_group === profileSpec.compatibility_group ? [] : [`${line.connector.sku}: ${line.connector.compatibility_group}, profil ${profileSpec.compatibility_group}`];
+      return isCompatible(line.connector, profileSpec) ? [] : [`${line.connector.sku}: ${line.connector.compatibility_group}, profil ${profileSpec.compatibility_group}`];
     });
     if (compatibilityWarnings.length) return res.status(409).json({ error: "INCOMPATIBLE_CONNECTOR", warnings: compatibilityWarnings });
     const complements = body.complementary_items.map((line) => {
@@ -169,7 +172,7 @@ export function createKitsRouter(db: Database.Database) {
       return { ...line, product };
     });
     db.transaction(() => {
-      db.prepare("UPDATE kit_variants SET profile_id=?,status=?,missing_mappings_json=?,compatibility_warnings_json=?,updated_at=CURRENT_TIMESTAMP WHERE id=?").run(body.profile_id, missing.length ? "INCOMPLETE" : "DRAFT", JSON.stringify(missing), JSON.stringify(compatibilityWarnings), req.params.id);
+      db.prepare("UPDATE kit_variants SET profile_id=?,status=?,missing_mappings_json=?,compatibility_warnings_json=?,updated_at=CURRENT_TIMESTAMP WHERE id=?").run(profile?.id || null, missing.length ? "INCOMPLETE" : "DRAFT", JSON.stringify(missing), JSON.stringify(compatibilityWarnings), req.params.id);
       db.prepare("DELETE FROM kit_variant_connectors WHERE variant_id=?").run(req.params.id);
       db.prepare("DELETE FROM kit_variant_complementary_items WHERE variant_id=?").run(req.params.id);
       const oldProfile = db.prepare("SELECT id FROM kit_variant_profiles WHERE variant_id=?").get(req.params.id) as any;
@@ -177,11 +180,13 @@ export function createKitsRouter(db: Database.Database) {
       const insertConnector = db.prepare(`INSERT INTO kit_variant_connectors (id,variant_id,connector_role,product_id,quantity,purchase_price_snapshot_cents,sale_price_snapshot_cents,unit_weight_snapshot_grams,product_name_snapshot,sku_snapshot)
         VALUES (?,?,?,?,?,?,?,?,?,?)`);
       for (const line of resolved) insertConnector.run(crypto.randomUUID(), req.params.id, line.role, line.connector?.product_id ?? null, line.quantity, line.connector?.purchase_cost_cents ?? null, line.connector?.sale_price_cents ?? null, line.connector?.unit_weight_grams ?? null, line.connector?.name_tr ?? null, line.connector?.sku ?? null);
-      const variantProfileId = crypto.randomUUID();
-      db.prepare("INSERT INTO kit_variant_profiles (id,variant_id,profile_id,purchase_price_snapshot_cents,sale_price_snapshot_cents,markup_basis_points_snapshot,weight_per_meter_snapshot_kg) VALUES (?,?,?,?,?,?,?)")
-        .run(variantProfileId, req.params.id, profile.id, profile.purchase_price_per_meter_cents, profile.sale_price_per_meter_cents, profile.markup_basis_points, profile.weight_per_meter_kg);
-      const insertCut = db.prepare("INSERT INTO kit_variant_profile_cuts (id,variant_profile_id,quantity,length_mm,label) VALUES (?,?,?,?,?)");
-      for (const cut of body.cuts) insertCut.run(crypto.randomUUID(), variantProfileId, cut.quantity, cut.length_mm, cut.label ?? null);
+      if (profile) {
+        const variantProfileId = crypto.randomUUID();
+        db.prepare("INSERT INTO kit_variant_profiles (id,variant_id,profile_id,purchase_price_snapshot_cents,sale_price_snapshot_cents,markup_basis_points_snapshot,weight_per_meter_snapshot_kg) VALUES (?,?,?,?,?,?,?)")
+          .run(variantProfileId, req.params.id, profile.id, profile.purchase_price_per_meter_cents, profile.sale_price_per_meter_cents, profile.markup_basis_points, profile.weight_per_meter_kg);
+        const insertCut = db.prepare("INSERT INTO kit_variant_profile_cuts (id,variant_profile_id,quantity,length_mm,label) VALUES (?,?,?,?,?)");
+        for (const cut of body.cuts) insertCut.run(crypto.randomUUID(), variantProfileId, cut.quantity, cut.length_mm, cut.label ?? null);
+      }
       const insertComplement = db.prepare(`INSERT INTO kit_variant_complementary_items (id,variant_id,complementary_product_id,quantity_milli,purchase_price_snapshot_cents,sale_price_snapshot_cents,markup_basis_points_snapshot,weight_per_unit_snapshot_grams,product_name_snapshot,unit_type_snapshot)
         VALUES (?,?,?,?,?,?,?,?,?,?)`);
       for (const line of complements) insertComplement.run(crypto.randomUUID(), req.params.id, line.product.id, Math.round(line.quantity * 1000), line.product.purchase_unit_price_cents, line.product.sale_unit_price_cents, line.product.markup_basis_points, line.product.weight_per_unit_grams, line.product.name, line.product.unit_type);

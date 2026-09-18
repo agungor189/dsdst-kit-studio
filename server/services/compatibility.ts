@@ -12,25 +12,56 @@ export type ConnectorCompatibility = {
   wall_min_mm: number | null; wall_max_mm: number | null; compatibility_group: string;
 };
 
-const sameNumber = (left: number | null, right: number | null) => left == null || right == null || Math.abs(left - right) < 0.001;
-const materialGroup = (value: string) => {
-  const normalized = value.replace(/ı/g, "i").replace(/İ/g, "I").normalize("NFD").replace(/\p{Diacritic}/gu, "").toUpperCase().replace(/[^A-Z0-9]/g, "");
-  if (normalized.includes("ALUMIN") || normalized.includes("ALUMINYUM")) return "ALUMINUM";
-  if (normalized.includes("PASLANMAZ") || normalized.includes("STAINLESS")) return "STAINLESS_STEEL";
-  if (normalized.includes("PREMIUMCASTIRON")) return "PREMIUM_CAST_IRON";
-  if (normalized.includes("DOKUM") || normalized.includes("CASTIRON")) return "CAST_IRON";
-  if (normalized.includes("KARBON") || normalized.includes("CARBONSTEEL")) return "CARBON_STEEL";
-  if (normalized.includes("CELIK") || normalized.includes("STEEL")) return "STEEL";
-  return normalized;
+type PhysicalSize = Pick<ProfileCompatibility, "shape" | "width_mm" | "height_mm" | "outside_diameter_mm" | "nominal_size" | "compatibility_group"> | Pick<ConnectorCompatibility, "profile_shape" | "profile_width_mm" | "profile_height_mm" | "outside_diameter_mm" | "nominal_size" | "compatibility_group">;
+
+const ROUND_ALIASES: Record<string, number> = {
+  R050: 21.3, "1/2": 21.3, R075: 26.9, "3/4": 26.9, R100: 33.7, "1": 33.7,
+  R125: 42.4, "11/4": 42.4, R150: 48.3, "11/2": 48.3, R200: 60.3, "2": 60.3,
 };
+const close = (left: number, right: number) => Math.abs(left - right) < 0.05;
+const token = (value: unknown) => String(value || "").replace(/,/g, ".").replace(/ı/g, "i").replace(/İ/g, "I").normalize("NFD").replace(/\p{Diacritic}/gu, "").toUpperCase().trim();
+const shapeOf = (item: PhysicalSize) => "shape" in item ? item.shape : item.profile_shape;
+
+function roundDiameter(value: unknown) {
+  const raw = token(value);
+  const compact = raw.replace(/\s+/g, "").replace(/INCH|INÇ|\"/g, "");
+  if (ROUND_ALIASES[compact] != null) return ROUND_ALIASES[compact];
+  const coded = compact.match(/(?:^|[^A-Z0-9])(R\d{3})(?:$|[^A-Z0-9])/)?.[1];
+  if (coded && ROUND_ALIASES[coded] != null) return ROUND_ALIASES[coded];
+  const millimeters = raw.match(/(?:RD[-\s]?|OD\s*|Ø\s*)?(\d+(?:\.\d+)?)\s*MM\b/)?.[1]
+    || raw.match(/^RD[-\s]?(\d+(?:\.\d+)?)$/)?.[1];
+  return millimeters ? Number(millimeters) : undefined;
+}
+
+function squareDimensions(value: unknown) {
+  const raw = token(value);
+  const pair = raw.match(/(\d+(?:\.\d+)?)\s*[X×*]\s*(\d+(?:\.\d+)?)/);
+  if (pair) return [Number(pair[1]), Number(pair[2])] as const;
+  const single = raw.replace(/\s+/g, "").match(/^(?:SQ[-]?|S)(\d+(?:\.\d+)?)(?:MM)?$/)?.[1];
+  return single ? [Number(single), Number(single)] as const : undefined;
+}
+
+/** Returns a material-independent canonical key for the physical profile envelope. */
+export function canonicalSizeKey(item: PhysicalSize) {
+  const shape = String(shapeOf(item) || "").toUpperCase();
+  if (shape === "ROUND") {
+    const diameter = Number(item.outside_diameter_mm) || roundDiameter(item.compatibility_group) || roundDiameter(item.nominal_size);
+    return diameter ? `ROUND:${Number(diameter.toFixed(3))}` : null;
+  }
+  if (shape === "SQUARE" || shape === "RECTANGULAR") {
+    const fallback = squareDimensions(item.compatibility_group);
+    const width = Number("width_mm" in item ? item.width_mm : item.profile_width_mm) || fallback?.[0];
+    const height = Number("height_mm" in item ? item.height_mm : item.profile_height_mm) || fallback?.[1];
+    return width && height ? `${shape}:${Number(width.toFixed(3))}X${Number(height.toFixed(3))}` : null;
+  }
+  return null;
+}
 
 export function isCompatible(connector: ConnectorCompatibility, profile: ProfileCompatibility) {
-  if (connector.compatibility_group !== profile.compatibility_group) return false;
   if (connector.profile_shape !== profile.shape) return false;
-  if (connector.compatible_material_group && materialGroup(connector.compatible_material_group) !== materialGroup(profile.material)) return false;
-  if (!sameNumber(connector.profile_width_mm, profile.width_mm) || !sameNumber(connector.profile_height_mm, profile.height_mm)) return false;
-  if (!sameNumber(connector.outside_diameter_mm, profile.outside_diameter_mm)) return false;
-  if (connector.nominal_size && profile.nominal_size && connector.nominal_size !== profile.nominal_size) return false;
+  const connectorKey = canonicalSizeKey(connector); const profileKey = canonicalSizeKey(profile);
+  if (!connectorKey || !profileKey || connectorKey !== profileKey) return false;
+  if (connector.profile_shape === "ROUND" && connector.outside_diameter_mm != null && profile.outside_diameter_mm != null && !close(connector.outside_diameter_mm, profile.outside_diameter_mm)) return false;
   if (profile.wall_thickness_mm != null && connector.wall_min_mm != null && profile.wall_thickness_mm < connector.wall_min_mm) return false;
   if (profile.wall_thickness_mm != null && connector.wall_max_mm != null && profile.wall_thickness_mm > connector.wall_max_mm) return false;
   return true;

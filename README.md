@@ -10,7 +10,7 @@ DSDST Kit Studio; Panel ürün masterını değiştirmeden bağlantı elemanı, 
 - Panel API: kullanıcı oturumları için `/api/auth/*`; katalog için `GET /api/kit-catalog/connectors` ve `GET /api/kit-catalog/connectors/:id`. Yalnız katalog çağrılarında `kit-catalog:read` izinli sunucu tarafı API key kullanılır.
 - Para değerleri integer kuruş, kesirli miktarlar binde bir birim olarak saklanır.
 
-Uyumluluk merkezi bir servis üzerinden `connector_compatibility` ile `profile_specs` alanlarını karşılaştırır. Panel’in yapılandırılmış form, boru tipi ve ölçü alanları birincil kaynaktır. Yalnız bu alanlar eksikse SKU yedek ayrıştırması kullanılır ve kayıt `SKU_FALLBACK` olarak işaretlenir. Resolver `connector_role + profile` girdisini gerçek Panel product UUID/SKU’suna dönüştürür.
+Uyumluluk merkezi bir servis üzerinden `connector_compatibility` ile `profile_specs` alanlarını karşılaştırır. Panel’in yapılandırılmış form, boru tipi ve ölçü alanları birincil kaynaktır. `R100`, `1 inch`, `1"`, `33.7 mm` ve `RD-33.7` gibi ölçü alias’ları aynı fiziksel ölçü anahtarına normalize edilir; kare ölçüler de aynı yaklaşımla eşleştirilir. Uyumluluk form + dış ölçü + kabul edilen et kalınlığına dayanır, materyal farkı seçimi engellemez. Yalnız yapılandırılmış alanlar eksikse SKU yedek ayrıştırması kullanılır ve kayıt `SKU_FALLBACK` olarak işaretlenir. Resolver `connector_role + profile` girdisini gerçek Panel product UUID/SKU’suna dönüştürür.
 
 ## Veri modeli
 
@@ -22,7 +22,7 @@ Ana tablolar: `kits`, `kit_variants`, `connector_roles`, `connector_compatibilit
 
 - Profil miktarı: `Σ(adet × kesim_mm) / 1000`
 - Grup maliyet/satış: satır miktarı × snapshot birim fiyatı
-- Toplam maliyet: bağlantı + profil + tamamlayıcı maliyeti
+- Toplam maliyet: bağlantı + profil + tamamlayıcı + işçilik + paketleme + diğer maliyetler
 - KDV hariç satış: üç grubun satış toplamı
 - Brüt kâr: KDV hariç satış − toplam maliyet
 - Brüt marj: brüt kâr / KDV hariç satış × 100

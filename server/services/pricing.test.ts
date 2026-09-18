@@ -24,8 +24,23 @@ test("pricing calculates connector snapshots, profile meters, fractional complem
   assert.equal(result.total_cost_cents, 190_805);
   assert.equal(result.sale_ex_vat_cents, 299_535);
   assert.equal(result.gross_profit_cents, 108_730);
+  assert.equal(result.connector_profit_cents, result.connector_sale_cents - result.connector_cost_cents);
+  assert.equal(result.profile_profit_cents, result.profile_sale_cents - result.profile_cost_cents);
+  assert.equal(result.complementary_profit_cents, result.complementary_sale_cents - result.complementary_cost_cents);
   assert.equal(result.vat_cents, 59_907);
   assert.equal(result.sale_inc_vat_cents, 359_442);
+});
+
+test("catalog sale snapshots take precedence over legacy markup fields", () => {
+  const result = calculatePricing({
+    connectors: [],
+    profile: { purchase_price_snapshot_cents: 10_000, sale_price_snapshot_cents: 13_000, markup_basis_points_snapshot: 9_000, weight_per_meter_snapshot_kg: 0 },
+    cuts: [{ quantity: 1, length_mm: 1000 }],
+    complementary: [{ quantity_milli: 1000, purchase_price_snapshot_cents: 2_000, sale_price_snapshot_cents: 2_500, markup_basis_points_snapshot: 9_000 }],
+    vatRateBasisPoints: 2000,
+  });
+  assert.equal(result.profile_sale_cents, 13_000);
+  assert.equal(result.complementary_sale_cents, 2_500);
 });
 
 test("profile optimizer calculates raw bars, saw kerf, waste and utilization", () => {

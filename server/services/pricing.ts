@@ -13,6 +13,7 @@ export type PricingResult = {
   connector_cost_cents: number; profile_cost_cents: number; complementary_cost_cents: number; component_cost_cents: number;
   labor_cost_cents: number; packaging_cost_cents: number; other_cost_cents: number; extra_cost_cents: number; total_cost_cents: number;
   connector_sale_cents: number; profile_sale_cents: number; complementary_sale_cents: number; subtotal_ex_vat_cents: number;
+  connector_profit_cents: number; profile_profit_cents: number; complementary_profit_cents: number;
   profit_cents: number; margin_basis_points: number; margin_percent: number; vat_rate_basis_points: number; vat_cents: number; total_inc_vat_cents: number;
   connector_weight_grams: number; profile_weight_grams: number; complementary_weight_grams: number; total_weight_grams: number;
   weight_complete: boolean; missing_weight_items: MissingWeightItem[];
@@ -31,8 +32,8 @@ function markupOf(item: { purchase_price_snapshot_cents: number; markup_basis_po
     ? Math.max(0, Math.round((item.sale_price_snapshot_cents / item.purchase_price_snapshot_cents - 1) * 10_000)) : 0;
 }
 function saleUnitOf(item: { purchase_price_snapshot_cents: number; markup_basis_points_snapshot?: number | null; sale_price_snapshot_cents?: number }) {
-  return item.markup_basis_points_snapshot == null && item.sale_price_snapshot_cents != null
-    ? item.sale_price_snapshot_cents : priceWithMarkup(item.purchase_price_snapshot_cents, markupOf(item));
+  return item.sale_price_snapshot_cents != null
+    ? Number(item.sale_price_snapshot_cents) : priceWithMarkup(item.purchase_price_snapshot_cents, markupOf(item));
 }
 
 export function optimizeProfileCuts(cuts: { quantity: number; length_mm: number }[], rawLengthMm: number, kerfMm = 3) {
@@ -84,6 +85,7 @@ export function calculatePricing(input: PricingInput): PricingResult {
     connector_cost_cents: connectorCost, profile_cost_cents: profileCost, complementary_cost_cents: complementaryCost, component_cost_cents: componentCost,
     labor_cost_cents: labor, packaging_cost_cents: packaging, other_cost_cents: other, extra_cost_cents: extraCost, total_cost_cents: totalCost,
     connector_sale_cents: connectorSale, profile_sale_cents: profileSale, complementary_sale_cents: complementarySale, subtotal_ex_vat_cents: subtotal,
+    connector_profit_cents: connectorSale - connectorCost, profile_profit_cents: profileSale - profileCost, complementary_profit_cents: complementarySale - complementaryCost,
     profit_cents: profit, margin_basis_points: marginBasisPoints, margin_percent: marginBasisPoints / 100, vat_rate_basis_points: input.vatRateBasisPoints, vat_cents: vat, total_inc_vat_cents: subtotal + vat,
     connector_weight_grams: connectorWeightRounded, profile_weight_grams: profileWeightRounded, complementary_weight_grams: complementaryWeightRounded,
     total_weight_grams: connectorWeightRounded + profileWeightRounded + complementaryWeightRounded, weight_complete: missing.length === 0, missing_weight_items: missing,
