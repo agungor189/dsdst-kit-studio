@@ -21,10 +21,24 @@ export function clearSessionCookieOptions() {
   return options;
 }
 
-export function createAppAuth(client: PanelAuthClient) {
+function hasTrustedOrigin(req: Request, allowedOrigins: ReadonlySet<string>) {
+  if (["GET", "HEAD", "OPTIONS"].includes(req.method)) return true;
+  const origin = req.headers.origin;
+  if (!origin) return false;
+  const host = req.get("host");
+  let effectiveOrigin = "";
+  try { effectiveOrigin = host ? new URL(`${req.protocol}://${host}`).origin : ""; } catch {}
+  return origin === effectiveOrigin || allowedOrigins.has(origin);
+}
+
+export function createAppAuth(client: PanelAuthClient, allowedOrigins: readonly string[] = []) {
+  const trustedOrigins = new Set(allowedOrigins.flatMap((value) => {
+    try { return [new URL(value).origin]; } catch { return []; }
+  }));
   return async (req: Request, res: Response, next: NextFunction) => {
     const token = readCookie(req, SESSION_COOKIE);
     if (!token) return res.status(401).json({ error: "UNAUTHORIZED" });
+    if (!hasTrustedOrigin(req, trustedOrigins)) return res.status(403).json({ error: "CSRF_FORBIDDEN" });
     try {
       req.user = await client.me(token);
       req.panelJwt = token;

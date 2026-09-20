@@ -10,9 +10,9 @@ function authFailure(res: express.Response, error: unknown) {
   return res.status(502).json({ error: "PANEL_AUTH_UNAVAILABLE" });
 }
 
-export function createAuthRouter(client: PanelAuthClient, rateLimitOptions?: LoginRateLimitOptions) {
+export function createAuthRouter(client: PanelAuthClient, rateLimitOptions?: LoginRateLimitOptions, allowedOrigins: readonly string[] = []) {
   const router = express.Router();
-  const authenticated = createAppAuth(client);
+  const authenticated = createAppAuth(client, allowedOrigins);
   router.post("/login", createLoginRateLimit(rateLimitOptions), async (req, res) => {
     const parsed = z.object({ username: z.string().min(1), password: z.string().min(1) }).safeParse(req.body);
     if (!parsed.success) return res.status(400).json({ error: "VALIDATION_ERROR", issues: parsed.error.issues });

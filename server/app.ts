@@ -30,8 +30,8 @@ export function createApp(db: Database.Database, options: AppOptions = {}) {
   app.use(express.json({ limit: "1mb" }));
   app.use("/uploads", express.static(uploadRoot, { fallthrough: false, dotfiles: "deny", immutable: true, maxAge: "1d" }));
   app.get("/api/health", (_req, res) => res.json({ status: "ok" }));
-  app.use("/api/auth", createAuthRouter(panelAuthClient, options.loginRateLimit));
-  const authenticated = options.authDisabled ? createTestAuth(options.testUser) : createAppAuth(panelAuthClient);
+  app.use("/api/auth", createAuthRouter(panelAuthClient, options.loginRateLimit, allowedOrigins));
+  const authenticated = options.authDisabled ? createTestAuth(options.testUser) : createAppAuth(panelAuthClient, allowedOrigins);
   app.use("/api", authenticated, requireBusinessAccess, requireKitAccess, createCatalogRouter(db), createCompatibilityRouter(db), createKitsRouter(db));
 
   const dist = path.resolve("dist");

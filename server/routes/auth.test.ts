@@ -46,7 +46,7 @@ test("login stores the Panel JWT only in an HttpOnly SameSite=Lax cookie", async
 test("readonly users can read but server rejects mutations", async () => {
   const { cookie } = await login("readonly");
   assert.equal((await fetch(`${baseUrl}/api/bootstrap`, { headers: { cookie } })).status, 200);
-  const response = await fetch(`${baseUrl}/api/kits`, { method: "POST", headers: { cookie, "content-type": "application/json" }, body: "{}" });
+  const response = await fetch(`${baseUrl}/api/kits`, { method: "POST", headers: { cookie, origin: "http://localhost:5173", "content-type": "application/json" }, body: "{}" });
   assert.equal(response.status, 403);
   assert.equal((await response.json() as any).error, "FORBIDDEN");
 });
@@ -54,16 +54,31 @@ test("readonly users can read but server rejects mutations", async () => {
 test("must-change-password blocks business APIs but allows the password proxy", async () => {
   const { cookie } = await login("forced");
   assert.equal((await fetch(`${baseUrl}/api/bootstrap`, { headers: { cookie } })).status, 403);
-  const changed = await fetch(`${baseUrl}/api/auth/change-password`, { method: "POST", headers: { cookie, "content-type": "application/json" }, body: JSON.stringify({ current_password: "correct", new_password: "new-password" }) });
+  const changed = await fetch(`${baseUrl}/api/auth/change-password`, { method: "POST", headers: { cookie, origin: "http://localhost:5173", "content-type": "application/json" }, body: JSON.stringify({ current_password: "correct", new_password: "new-password" }) });
   assert.equal(changed.status, 200);
   assert.equal((await changed.json() as any).user.must_change_password, false);
 });
 
 test("logout revokes the Panel session before clearing the session cookie", async () => {
   const { cookie } = await login("admin");
-  const response = await fetch(`${baseUrl}/api/auth/logout`, { method: "POST", headers: { cookie } });
+  const response = await fetch(`${baseUrl}/api/auth/logout`, { method: "POST", headers: { cookie, origin: "http://localhost:5173" } });
   assert.equal(response.status, 204);
   assert.match(response.headers.get("set-cookie") || "", /dsdst_kit_session=;/);
+});
+
+test("cookie-auth unsafe requests fail closed on missing, cross-origin and same-site different Origin", async () => {
+  const { cookie } = await login("admin");
+  const logout = (origin?: string) => fetch(`${baseUrl}/api/auth/logout`, {
+    method: "POST",
+    headers: { cookie, ...(origin ? { origin } : {}) },
+  });
+
+  assert.equal((await logout()).status, 403, "missing Origin");
+  assert.equal((await logout("https://attacker.example")).status, 403, "cross-origin");
+  assert.equal((await logout("null")).status, 403, "invalid Origin");
+  const target = new URL(baseUrl);
+  assert.equal((await logout(`${target.protocol}//${target.hostname}:65535`)).status, 403, "same-site different origin");
+  assert.equal((await logout("http://localhost:5173")).status, 204, "configured application origin");
 });
 
 test("login proxy limits failures by IP and normalized username", async () => {
