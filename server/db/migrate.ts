@@ -103,6 +103,16 @@ function assertSchemaEffects(actual: Database.Database, maxVersion: number): voi
 
 export function runMigrations(db: Database.Database) {
   const manifest = getMigrationManifest();
+  const migrationTableExists = Boolean(db.prepare(
+    "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'schema_migrations'",
+  ).get());
+  const existingSchemaObjects = Number(db.prepare(`
+    SELECT COUNT(*) FROM sqlite_master
+    WHERE name NOT LIKE 'sqlite_%' AND name <> 'schema_migrations'
+  `).pluck().get());
+  if (!migrationTableExists && existingSchemaObjects > 0) {
+    throw new Error("Migration history is missing from an existing Kit schema");
+  }
   db.exec("CREATE TABLE IF NOT EXISTS schema_migrations (version INTEGER PRIMARY KEY, name TEXT NOT NULL, checksum TEXT, applied_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)");
   const columns = new Set((db.prepare("PRAGMA table_info(schema_migrations)").all() as { name: string }[]).map(({ name }) => name));
   const hasChecksumColumn = columns.has("checksum");
@@ -113,13 +123,23 @@ export function runMigrations(db: Database.Database) {
     if (!entry) throw new Error(`Database contains unsupported migration version v${row.version}`);
     if (row.version !== entry.version) throw new Error(`Migration history is not an exact prefix: expected v${entry.version}, found v${row.version}`);
     if (row.name !== entry.name) throw new Error(`Migration v${row.version} name mismatch: database=${row.name}, source=${entry.name}`);
+    if (hasChecksumColumn && row.checksum === null) throw new Error(`Migration v${row.version} has a NULL checksum in a checksum-aware history`);
     if (row.checksum && row.checksum !== entry.checksum) throw new Error(`Migration v${row.version} checksum mismatch`);
     applied.add(row.version);
   }
+  if (rows.length === 0 && existingSchemaObjects > 0) {
+    throw new Error("Migration history is missing from an existing Kit schema");
+  }
   if (rows.length > 0) assertSchemaEffects(db, rows.at(-1)!.version);
-  if (!hasChecksumColumn) db.exec("ALTER TABLE schema_migrations ADD COLUMN checksum TEXT");
-  const checksumBackfill = db.prepare("UPDATE schema_migrations SET checksum = ? WHERE version = ? AND checksum IS NULL");
-  for (const row of rows) if (!row.checksum) checksumBackfill.run(manifest.find(({ version }) => version === row.version)!.checksum, row.version);
+  if (!hasChecksumColumn) {
+    db.transaction(() => {
+      db.exec("ALTER TABLE schema_migrations ADD COLUMN checksum TEXT");
+      const checksumBackfill = db.prepare("UPDATE schema_migrations SET checksum = ? WHERE version = ? AND checksum IS NULL");
+      for (const row of rows) {
+        checksumBackfill.run(manifest.find(({ version }) => version === row.version)!.checksum, row.version);
+      }
+    })();
+  }
   for (const entry of manifest) {
     if (applied.has(entry.version)) continue;
     const sql = fs.readFileSync(path.join(migrationDir, entry.name), "utf8");

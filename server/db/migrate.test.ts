@@ -100,8 +100,35 @@ test("migration history rejects gaps and claimed schema effects that are absent"
   runMigrations(unverifiableNull);
   unverifiableNull.prepare("UPDATE schema_migrations SET checksum = NULL WHERE version = 1").run();
   unverifiableNull.exec("DROP TABLE suppliers");
-  assert.throws(() => runMigrations(unverifiableNull), /schema effect|checksum history|suppliers/i);
+  assert.throws(() => runMigrations(unverifiableNull), /NULL checksum|schema effect|checksum history|suppliers/i);
   unverifiableNull.close();
+});
+
+test("existing Kit schema with completely missing migration history fails without mutation", () => {
+  const db = new Database(":memory:");
+  runMigrations(db);
+  db.prepare("INSERT INTO suppliers (id, name) VALUES ('history-loss-supplier', 'History loss supplier')").run();
+  db.exec("DROP TABLE schema_migrations");
+  const schemaBefore = db.prepare("SELECT type, name, sql FROM sqlite_master WHERE name NOT LIKE 'sqlite_%' ORDER BY type, name").all();
+  const supplierBefore = db.prepare("SELECT * FROM suppliers WHERE id = 'history-loss-supplier'").get();
+
+  assert.throws(() => runMigrations(db), /migration history.*missing|existing schema.*history/i);
+  assert.equal(db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'schema_migrations'").get(), undefined);
+  assert.deepEqual(db.prepare("SELECT type, name, sql FROM sqlite_master WHERE name NOT LIKE 'sqlite_%' ORDER BY type, name").all(), schemaBefore);
+  assert.deepEqual(db.prepare("SELECT * FROM suppliers WHERE id = 'history-loss-supplier'").get(), supplierBefore);
+  db.close();
+});
+
+test("an isolated NULL checksum in a checksum-aware Kit history fails without backfill", () => {
+  const db = new Database(":memory:");
+  runMigrations(db);
+  db.prepare("UPDATE schema_migrations SET checksum = NULL WHERE version = 1").run();
+  const schemaBefore = db.prepare("SELECT type, name, sql FROM sqlite_master WHERE name NOT LIKE 'sqlite_%' ORDER BY type, name").all();
+
+  assert.throws(() => runMigrations(db), /NULL checksum|checksum.*null|corrupt.*checksum/i);
+  assert.equal(db.prepare("SELECT checksum FROM schema_migrations WHERE version = 1").pluck().get(), null);
+  assert.deepEqual(db.prepare("SELECT type, name, sql FROM sqlite_master WHERE name NOT LIKE 'sqlite_%' ORDER BY type, name").all(), schemaBefore);
+  db.close();
 });
 
 test("frozen migration history rejects retroactive insertion or replacement", () => {
