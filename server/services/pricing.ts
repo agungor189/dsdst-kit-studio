@@ -1,10 +1,10 @@
 export type MissingWeightItem = { type: "CONNECTOR" | "PROFILE" | "COMPLEMENTARY"; id?: string | null; name: string; quantity: number };
 
 export type PricingInput = {
-  connectors: { quantity: number; purchase_price_snapshot_cents: number; sale_price_snapshot_cents: number; unit_weight_snapshot_grams?: number | null; product_id?: string | null; sku_snapshot?: string | null; product_name_snapshot?: string | null }[];
-  profile: { purchase_price_snapshot_cents: number; markup_basis_points_snapshot?: number | null; sale_price_snapshot_cents?: number; weight_per_meter_snapshot_kg: number; raw_length_mm?: number; profile_id?: string; current_name?: string; product_name_snapshot?: string } | null;
+  connectors: { quantity: number; purchase_price_snapshot_cents: number | null; sale_price_snapshot_cents: number | null; unit_weight_snapshot_grams?: number | null; product_id?: string | null; sku_snapshot?: string | null; product_name_snapshot?: string | null }[];
+  profile: { purchase_price_snapshot_cents: number | null; markup_basis_points_snapshot?: number | null; sale_price_snapshot_cents?: number | null; weight_per_meter_snapshot_kg: number; raw_length_mm?: number; profile_id?: string; current_name?: string; product_name_snapshot?: string } | null;
   cuts: { quantity: number; length_mm: number }[];
-  complementary: { quantity_milli: number; purchase_price_snapshot_cents: number; markup_basis_points_snapshot?: number | null; sale_price_snapshot_cents?: number; weight_per_unit_snapshot_grams?: number | null; complementary_product_id?: string; product_name_snapshot?: string }[];
+  complementary: { quantity_milli: number; purchase_price_snapshot_cents: number | null; markup_basis_points_snapshot?: number | null; sale_price_snapshot_cents?: number | null; weight_per_unit_snapshot_grams?: number | null; complementary_product_id?: string; product_name_snapshot?: string }[];
   vatRateBasisPoints: number;
   laborCostCents?: number; packagingCostCents?: number; otherCostCents?: number;
 };
@@ -26,12 +26,12 @@ export type PricingResult = {
 const roundedRatio = (value: number, numerator: number, denominator: number) => Math.round((value * numerator) / denominator);
 export const priceWithMarkup = (purchaseCents: number, markupBasisPoints: number) => roundedRatio(purchaseCents, 10_000 + markupBasisPoints, 10_000);
 
-function markupOf(item: { purchase_price_snapshot_cents: number; markup_basis_points_snapshot?: number | null; sale_price_snapshot_cents?: number }) {
+function markupOf(item: { purchase_price_snapshot_cents: number; markup_basis_points_snapshot?: number | null; sale_price_snapshot_cents?: number | null }) {
   if (item.markup_basis_points_snapshot != null) return Number(item.markup_basis_points_snapshot);
   return item.purchase_price_snapshot_cents > 0 && item.sale_price_snapshot_cents != null
     ? Math.max(0, Math.round((item.sale_price_snapshot_cents / item.purchase_price_snapshot_cents - 1) * 10_000)) : 0;
 }
-function saleUnitOf(item: { purchase_price_snapshot_cents: number; markup_basis_points_snapshot?: number | null; sale_price_snapshot_cents?: number }) {
+function saleUnitOf(item: { purchase_price_snapshot_cents: number; markup_basis_points_snapshot?: number | null; sale_price_snapshot_cents?: number | null }) {
   return item.sale_price_snapshot_cents != null
     ? Number(item.sale_price_snapshot_cents) : priceWithMarkup(item.purchase_price_snapshot_cents, markupOf(item));
 }
@@ -52,9 +52,20 @@ export function optimizeProfileCuts(cuts: { quantity: number; length_mm: number 
 }
 
 export function calculatePricing(input: PricingInput): PricingResult {
+  const unknown = [
+    ...input.connectors.map((item) => ({ kind: "CONNECTOR", cost: item.purchase_price_snapshot_cents, price: item.sale_price_snapshot_cents })),
+    ...(input.profile ? [{ kind: "PROFILE", cost: input.profile.purchase_price_snapshot_cents, price: input.profile.sale_price_snapshot_cents }] : []),
+    ...input.complementary.map((item) => ({ kind: "COMPLEMENTARY", cost: item.purchase_price_snapshot_cents, price: item.sale_price_snapshot_cents })),
+  ].find((item) => item.cost == null || item.price == null);
+  if (unknown) throw new Error(`CATALOG_ECONOMICS_UNKNOWN:${unknown.kind}`);
+  const priced = input as PricingInput & {
+    connectors: Array<PricingInput["connectors"][number] & { purchase_price_snapshot_cents: number; sale_price_snapshot_cents: number }>;
+    profile: null | (NonNullable<PricingInput["profile"]> & { purchase_price_snapshot_cents: number; sale_price_snapshot_cents: number });
+    complementary: Array<PricingInput["complementary"][number] & { purchase_price_snapshot_cents: number; sale_price_snapshot_cents: number }>;
+  };
   const missing: MissingWeightItem[] = [];
-  const connectorCost = input.connectors.reduce((sum, item) => sum + item.purchase_price_snapshot_cents * item.quantity, 0);
-  const connectorSale = input.connectors.reduce((sum, item) => sum + item.sale_price_snapshot_cents * item.quantity, 0);
+  const connectorCost = priced.connectors.reduce((sum, item) => sum + item.purchase_price_snapshot_cents! * item.quantity, 0);
+  const connectorSale = priced.connectors.reduce((sum, item) => sum + item.sale_price_snapshot_cents! * item.quantity, 0);
   const connectorWeight = input.connectors.reduce((sum, item) => {
     const weight = Number(item.unit_weight_snapshot_grams || 0);
     if (weight <= 0 && item.quantity > 0) missing.push({ type: "CONNECTOR", id: item.product_id, name: item.sku_snapshot || item.product_name_snapshot || "Bağlantı elemanı", quantity: item.quantity });
@@ -62,13 +73,13 @@ export function calculatePricing(input: PricingInput): PricingResult {
   }, 0);
   const totalMillimeters = input.cuts.reduce((sum, cut) => sum + cut.quantity * cut.length_mm, 0);
   const optimization = input.profile?.raw_length_mm ? optimizeProfileCuts(input.cuts, input.profile.raw_length_mm) : { raw_bar_count: 0, purchased_millimeters: totalMillimeters, waste_millimeters: 0, utilization_basis_points: totalMillimeters ? 10_000 : 0 };
-  const profileCost = input.profile ? roundedRatio(input.profile.purchase_price_snapshot_cents, totalMillimeters, 1000) : 0;
-  const profileSale = input.profile ? roundedRatio(saleUnitOf(input.profile), totalMillimeters, 1000) : 0;
+  const profileCost = priced.profile ? roundedRatio(priced.profile.purchase_price_snapshot_cents, totalMillimeters, 1000) : 0;
+  const profileSale = priced.profile ? roundedRatio(saleUnitOf(priced.profile), totalMillimeters, 1000) : 0;
   const profileWeightRate = Number(input.profile?.weight_per_meter_snapshot_kg || 0);
   if (input.profile && totalMillimeters > 0 && profileWeightRate <= 0) missing.push({ type: "PROFILE", id: input.profile.profile_id, name: input.profile.current_name || input.profile.product_name_snapshot || "Profil", quantity: totalMillimeters / 1000 });
   const profileWeight = profileWeightRate > 0 ? profileWeightRate * totalMillimeters : 0;
-  const complementaryCost = input.complementary.reduce((sum, item) => sum + roundedRatio(item.purchase_price_snapshot_cents, item.quantity_milli, 1000), 0);
-  const complementarySale = input.complementary.reduce((sum, item) => sum + roundedRatio(saleUnitOf(item), item.quantity_milli, 1000), 0);
+  const complementaryCost = priced.complementary.reduce((sum, item) => sum + roundedRatio(item.purchase_price_snapshot_cents!, item.quantity_milli, 1000), 0);
+  const complementarySale = priced.complementary.reduce((sum, item) => sum + roundedRatio(saleUnitOf({ ...item, purchase_price_snapshot_cents: item.purchase_price_snapshot_cents! }), item.quantity_milli, 1000), 0);
   const complementaryWeight = input.complementary.reduce((sum, item) => {
     const weight = Number(item.weight_per_unit_snapshot_grams || 0);
     if (weight <= 0 && item.quantity_milli > 0) missing.push({ type: "COMPLEMENTARY", id: item.complementary_product_id, name: item.product_name_snapshot || "Tamamlayıcı ürün", quantity: item.quantity_milli / 1000 });

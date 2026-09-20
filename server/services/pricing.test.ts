@@ -65,9 +65,9 @@ test("kit profile cost uses consumed meters while retaining raw-bar optimization
 test("automatic component pricing includes extras, VAT and all known weights", () => {
   const result = calculatePricing({
     connectors: [{ quantity: 4, purchase_price_snapshot_cents: 10_000, sale_price_snapshot_cents: 16_000, unit_weight_snapshot_grams: 525, sku_snapshot: "AL-R100-ELB" }],
-    profile: { purchase_price_snapshot_cents: 10_000, markup_basis_points_snapshot: 4_000, weight_per_meter_snapshot_kg: 3.825 / 3.5, current_name: "Profil" },
+    profile: { purchase_price_snapshot_cents: 10_000, sale_price_snapshot_cents: 14_000, markup_basis_points_snapshot: 4_000, weight_per_meter_snapshot_kg: 3.825 / 3.5, current_name: "Profil" },
     cuts: [{ quantity: 1, length_mm: 3_500 }],
-    complementary: [{ quantity_milli: 2_500, purchase_price_snapshot_cents: 8_000, markup_basis_points_snapshot: 5_000, weight_per_unit_snapshot_grams: 560, product_name_snapshot: "Kumaş" }],
+    complementary: [{ quantity_milli: 2_500, purchase_price_snapshot_cents: 8_000, sale_price_snapshot_cents: 12_000, markup_basis_points_snapshot: 5_000, weight_per_unit_snapshot_grams: 560, product_name_snapshot: "Kumaş" }],
     laborCostCents: 4_000, packagingCostCents: 3_000, otherCostCents: 3_000, vatRateBasisPoints: 2_000,
   });
   assert.equal(result.component_cost_cents, 95_000);
@@ -87,10 +87,17 @@ test("automatic component pricing includes extras, VAT and all known weights", (
 test("missing product weights keep the known total and mark it incomplete", () => {
   const result = calculatePricing({
     connectors: [{ quantity: 2, purchase_price_snapshot_cents: 100, sale_price_snapshot_cents: 150, unit_weight_snapshot_grams: null, sku_snapshot: "UNKNOWN" }],
-    profile: { purchase_price_snapshot_cents: 100, markup_basis_points_snapshot: 0, weight_per_meter_snapshot_kg: 1 },
+    profile: { purchase_price_snapshot_cents: 100, sale_price_snapshot_cents: 100, markup_basis_points_snapshot: 0, weight_per_meter_snapshot_kg: 1 },
     cuts: [{ quantity: 1, length_mm: 1_000 }], complementary: [], vatRateBasisPoints: 2_000,
   });
   assert.equal(result.total_weight_grams, 1_000);
   assert.equal(result.weight_complete, false);
   assert.deepEqual(result.missing_weight_items.map((item) => item.name), ["UNKNOWN"]);
+});
+
+test("missing canonical cost or price blocks authoritative pricing", () => {
+  assert.throws(() => calculatePricing({
+    connectors: [{ quantity: 1, purchase_price_snapshot_cents: null, sale_price_snapshot_cents: null }],
+    profile: null, cuts: [], complementary: [], vatRateBasisPoints: 2000,
+  }), /CATALOG_ECONOMICS_UNKNOWN:CONNECTOR/);
 });

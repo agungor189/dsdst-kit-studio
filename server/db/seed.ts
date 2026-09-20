@@ -14,26 +14,26 @@ export function seedDevelopmentData(db: Database.Database) {
     ["spec-sq40", "SQUARE", "Aluminum", 40, 40, null, null, 2, "SQ-40X40"],
     ["spec-rd337", "ROUND", "Aluminum", null, null, 33.7, "1\"", 2, "RD-33.7"],
   ];
-  const specStmt = db.prepare("INSERT OR IGNORE INTO profile_specs (id,shape,material,width_mm,height_mm,outside_diameter_mm,nominal_size,wall_thickness_mm,compatibility_group) VALUES (?,?,?,?,?,?,?,?,?)");
-  specs.forEach((row) => specStmt.run(...row));
+  const specStmt = db.prepare("INSERT OR IGNORE INTO profile_specs (id,shape,material,width_mm,height_mm,outside_diameter_mm,nominal_size,wall_thickness_mm,compatibility_group,width_micrometers,height_micrometers,outside_diameter_micrometers,wall_thickness_micrometers) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)");
+  specs.forEach((row) => specStmt.run(...row, row[3] == null ? null : Number(row[3]) * 1000, row[4] == null ? null : Number(row[4]) * 1000, row[5] == null ? null : Number(row[5]) * 1000, Number(row[7]) * 1000));
 
   const profiles = [
     ["profile-sq20", "spec-sq20", "Square 20×20 Aluminum", 6000, 0.32, 8000, 12000, 5000, "sup-abc"],
     ["profile-sq40", "spec-sq40", "Square 40×40 Aluminum", 6000, 0.78, 13800, 19800, 4348, "sup-abc"],
     ["profile-rd337", "spec-rd337", "Round 1\" Aluminum", 6000, 0.49, 10400, 15600, 5000, "sup-abc"],
   ];
-  const profileStmt = db.prepare("INSERT OR IGNORE INTO profiles (id,spec_id,name,raw_length_mm,weight_per_meter_kg,purchase_price_per_meter_cents,sale_price_per_meter_cents,markup_basis_points,supplier_id) VALUES (?,?,?,?,?,?,?,?,?)");
-  profiles.forEach((row) => profileStmt.run(...row));
+  const profileStmt = db.prepare("INSERT OR IGNORE INTO profiles (id,spec_id,name,raw_length_mm,weight_per_meter_kg,purchase_price_per_meter_cents,sale_price_per_meter_cents,markup_basis_points,supplier_id,catalog_source,catalog_active,catalog_version_ref,uom_registry_version,base_uom_code,cost_status,sale_price_status) VALUES (?,?,?,?,?,?,?,?,?,'PANEL',1,?,'uom-registry:v1','meter','KNOWN','KNOWN')");
+  profiles.forEach((row) => profileStmt.run(...row, `catalog-product:${row[0]}:v1`));
 
   const complements = [
     ["comp-mdf", "MDF Tabla", "MDF-18", "18 mm kesilmiş MDF raf tablası", "M2", 19500, 28500, 4615, 3500, "sup-abc"],
     ["comp-wheel", "Frenli Tekerlek", "WH-75-B", "75 mm frenli endüstriyel tekerlek", "PIECE", 8500, 13500, 5882, 850, "sup-mob"],
     ["comp-pvc", "PVC Kaplama", "PVC-GR", "Gri profil kaplama şeridi", "METER", 2200, 3900, 7727, 90, "sup-abc"],
   ];
-  const compStmt = db.prepare("INSERT OR IGNORE INTO complementary_products (id,name,sku_optional,description,unit_type,purchase_unit_price_cents,sale_unit_price_cents,markup_basis_points,weight_per_unit_grams,supplier_id) VALUES (?,?,?,?,?,?,?,?,?,?)");
-  complements.forEach((row) => compStmt.run(...row));
+  const compStmt = db.prepare("INSERT OR IGNORE INTO complementary_products (id,name,sku_optional,description,unit_type,purchase_unit_price_cents,sale_unit_price_cents,markup_basis_points,weight_per_unit_grams,supplier_id,catalog_source,catalog_active,catalog_version_ref,uom_registry_version,base_uom_code,cost_status,sale_price_status) VALUES (?,?,?,?,?,?,?,?,?,?,'PANEL',1,?,'uom-registry:v1',?,'KNOWN','KNOWN')");
+  complements.forEach((row) => compStmt.run(...row, `catalog-product:${row[0]}:v1`, row[4] === "M2" ? "square_meter" : row[4] === "METER" ? "meter" : "piece"));
 
-  const connectorStmt = db.prepare("INSERT OR IGNORE INTO panel_connector_cache (product_id,sku,name_tr,name_en,material,form,size,purchase_cost_cents,sale_price_cents,unit_weight_grams,central_stock,panel_updated_at,compatibility_status,compatibility_source) VALUES (?,?,?,?,?,?,?,?,?,?,?,?, 'COMPATIBLE','MANUAL')");
+  const connectorStmt = db.prepare("INSERT OR IGNORE INTO panel_connector_cache (product_id,sku,name_tr,name_en,material,form,size,purchase_cost_cents,sale_price_cents,unit_weight_grams,central_stock,panel_updated_at,compatibility_status,compatibility_source,catalog_active,catalog_version_ref,uom_registry_version,base_uom_code,cost_status,sale_price_status) VALUES (?,?,?,?,?,?,?,?,?,?,?,?, 'COMPATIBLE','MANUAL',1,?,'uom-registry:v1','piece','KNOWN','KNOWN')");
   const compatibilityStmt = db.prepare("INSERT OR IGNORE INTO connector_compatibility (id,product_id,connector_role,profile_shape,profile_width_mm,profile_height_mm,outside_diameter_mm,nominal_size,compatible_material_group,wall_min_mm,wall_max_mm,compatibility_group) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)");
   for (const group of [
     { code: "S20", shape: "SQUARE", w: 20, h: 20, od: null, nominal: null, group: "SQ-20X20", sale: 12000, cost: 7200 },
@@ -44,7 +44,7 @@ export function seedDevelopmentData(db: Database.Database) {
       if (group.code === "R100" && role === "3W") continue;
       const id = `panel-${group.code.toLowerCase()}-${role.toLowerCase()}`;
       const sku = `AL-${group.code}-${role}`;
-      connectorStmt.run(id, sku, `${role} bağlantı`, `${role} connector`, "Aluminum", group.shape, group.group, group.cost, group.sale, role === "TEE" ? 410 : 320, 48, "2026-09-01T00:00:00Z");
+      connectorStmt.run(id, sku, `${role} bağlantı`, `${role} connector`, "Aluminum", group.shape, group.group, group.cost, group.sale, role === "TEE" ? 410 : 320, 48, "2026-09-01T00:00:00Z", `catalog-product:${id}:v1`);
       compatibilityStmt.run(`compat-${id}`, id, role, group.shape, group.w, group.h, group.od, group.nominal, "ALUMINUM", 1, 3, group.group);
     }
   }

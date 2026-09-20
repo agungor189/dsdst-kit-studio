@@ -42,6 +42,34 @@ test("profile and complementary catalog writes cannot create a second authority"
   assert.equal(complementResponse.status, 410);
 });
 
+test("legacy local catalog records remain readable historically but are not selectable for new work", async () => {
+  db.prepare("INSERT INTO profile_specs (id,shape,material,compatibility_group) VALUES ('legacy-spec','SQUARE','Legacy','LEGACY-1')").run();
+  db.prepare("INSERT INTO profiles (id,spec_id,name) VALUES ('legacy-profile','legacy-spec','Legacy profile')").run();
+  db.prepare("INSERT INTO complementary_products (id,name,unit_type) VALUES ('legacy-complement','Legacy complement','PIECE')").run();
+  const bootstrap = await (await fetch(`${baseUrl}/api/bootstrap`)).json() as any;
+  assert.equal(bootstrap.profiles.some((row: any) => row.id === "legacy-profile"), false);
+  assert.equal(bootstrap.complementaryProducts.some((row: any) => row.id === "legacy-complement"), false);
+  assert.ok(db.prepare("SELECT 1 FROM profiles WHERE id='legacy-profile'").get());
+  assert.ok(db.prepare("SELECT 1 FROM complementary_products WHERE id='legacy-complement'").get());
+});
+
+test("unknown canonical economics is explicit in the selectable catalog response", async () => {
+  db.prepare("UPDATE complementary_products SET cost_status='UNKNOWN',sale_price_status='UNKNOWN' WHERE id='comp-wheel'").run();
+  const bootstrap = await (await fetch(`${baseUrl}/api/bootstrap`)).json() as any;
+  const wheel = bootstrap.complementaryProducts.find((row: any) => row.id === "comp-wheel");
+  assert.equal(wheel.cost_status, "UNKNOWN");
+  assert.equal(wheel.sale_price_status, "UNKNOWN");
+  assert.equal(wheel.purchase_unit_price_cents, null);
+  assert.equal(wheel.sale_unit_price_cents, null);
+  const quote = await fetch(`${baseUrl}/api/pricing/quote`, {
+    method: "POST", headers: { "content-type": "application/json" },
+    body: JSON.stringify({ connectors: [], cuts: [], complementary_items: [{ product_id: "comp-wheel", quantity: 1 }] }),
+  });
+  assert.equal(quote.status, 409);
+  assert.equal((await quote.json() as any).error, "CATALOG_ECONOMICS_UNKNOWN");
+  db.prepare("UPDATE complementary_products SET cost_status='KNOWN',sale_price_status='KNOWN' WHERE id='comp-wheel'").run();
+});
+
 test("profile images are read-only while kit draft images remain writable", async () => {
   const png = new Blob([validPngBytes], { type: "image/png" });
   const profileForm = new FormData(); profileForm.append("image", png, "profile.png");

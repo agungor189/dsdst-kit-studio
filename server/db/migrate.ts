@@ -15,7 +15,7 @@ export function resolveMigrationDirectory(candidates = [
 
 const migrationDir = resolveMigrationDirectory();
 
-export const CURRENT_SCHEMA_VERSION = 7;
+export const CURRENT_SCHEMA_VERSION = 8;
 export const SUPPORTED_UPGRADE_STARTS = [1, 5] as const;
 
 export type MigrationManifestEntry = {

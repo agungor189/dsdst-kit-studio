@@ -8,7 +8,7 @@ function targetProfile(db: Database.Database, profileId: string) {
   return db.prepare(`SELECT p.*,ps.shape,ps.material,ps.width_mm,ps.height_mm,ps.outside_diameter_mm,ps.nominal_size,
     ps.wall_thickness_mm,COALESCE(ps.size_compatibility_group,ps.compatibility_group) compatibility_group
     FROM profiles p JOIN profile_specs ps ON ps.id=p.spec_id
-    WHERE p.id=? AND p.active=1 AND COALESCE(p.catalog_active,1)=1`).get(profileId) as any;
+    WHERE p.id=? AND p.active=1 AND p.catalog_source='PANEL' AND p.catalog_active=1 AND p.catalog_version_ref IS NOT NULL`).get(profileId) as any;
 }
 
 function summary(pricing: any) {
@@ -69,7 +69,7 @@ export function conversionOptions(db: Database.Database, sourceVariantId: string
   if (!source) return null;
   const profiles = db.prepare(`SELECT p.id,COALESCE(ps.size_compatibility_group,ps.compatibility_group) compatibility_group
     FROM profiles p JOIN profile_specs ps ON ps.id=p.spec_id
-    WHERE p.active=1 AND COALESCE(p.catalog_active,1)=1 AND p.id!=? ORDER BY ps.shape,ps.outside_diameter_mm,ps.width_mm,ps.wall_thickness_mm`).all(source.profile_id) as any[];
+    WHERE p.active=1 AND p.catalog_source='PANEL' AND p.catalog_active=1 AND p.catalog_version_ref IS NOT NULL AND p.id!=? ORDER BY ps.shape,ps.outside_diameter_mm,ps.width_mm,ps.wall_thickness_mm`).all(source.profile_id) as any[];
   return profiles
     .filter((profile) => mode === "profile" ? profile.compatibility_group === source.compatibility_group : profile.compatibility_group !== source.compatibility_group)
     .map((profile) => previewVariantConversion(db, sourceVariantId, profile.id))

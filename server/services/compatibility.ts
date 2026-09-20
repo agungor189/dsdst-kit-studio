@@ -68,7 +68,7 @@ export function isCompatible(connector: ConnectorCompatibility, profile: Profile
 export function getProfileCompatibility(db: Database.Database, profileId: string) {
   return db.prepare(`SELECT ps.shape, ps.material, ps.width_mm, ps.height_mm, ps.outside_diameter_mm,
     ps.nominal_size, ps.wall_thickness_mm, COALESCE(ps.size_compatibility_group,ps.compatibility_group) compatibility_group
-    FROM profiles p JOIN profile_specs ps ON ps.id=p.spec_id WHERE p.id=? AND p.active=1`).get(profileId) as ProfileCompatibility | undefined;
+    FROM profiles p JOIN profile_specs ps ON ps.id=p.spec_id WHERE p.id=? AND p.active=1 AND p.catalog_source='PANEL' AND p.catalog_active=1 AND p.catalog_version_ref IS NOT NULL`).get(profileId) as ProfileCompatibility | undefined;
 }
 
 export function getConnectorCompatibility(db: Database.Database, productId: string) {
@@ -81,7 +81,7 @@ export function compatibleConnectorsForProfile(db: Database.Database, profileId:
   const rows = db.prepare(`SELECT pc.*, cc.connector_role,cc.profile_shape,cc.profile_width_mm,cc.profile_height_mm,
     cc.outside_diameter_mm,cc.nominal_size,cc.compatible_material_group,cc.wall_min_mm,cc.wall_max_mm,cc.compatibility_group
     FROM panel_connector_cache pc JOIN connector_compatibility cc ON cc.product_id=pc.product_id
-    WHERE cc.active=1 AND pc.catalog_active=1 AND pc.compatibility_status='COMPATIBLE' ORDER BY cc.connector_role,pc.sku`).all() as any[];
+    WHERE cc.active=1 AND pc.catalog_active=1 AND pc.catalog_version_ref IS NOT NULL AND pc.compatibility_status='COMPATIBLE' ORDER BY cc.connector_role,pc.sku`).all() as any[];
   return rows.filter((row) => isCompatible(row, profile));
 }
 
@@ -90,7 +90,7 @@ export function compatibleProfilesForConnector(db: Database.Database, productId:
   if (!connector) return [];
   const rows = db.prepare(`SELECT p.*,ps.shape,ps.material,ps.width_mm,ps.height_mm,ps.outside_diameter_mm,
     ps.nominal_size,ps.wall_thickness_mm,COALESCE(ps.size_compatibility_group,ps.compatibility_group) compatibility_group FROM profiles p JOIN profile_specs ps ON ps.id=p.spec_id
-    WHERE p.active=1 ORDER BY p.name`).all() as any[];
+    WHERE p.active=1 AND p.catalog_source='PANEL' AND p.catalog_active=1 AND p.catalog_version_ref IS NOT NULL ORDER BY p.name`).all() as any[];
   return rows.filter((row) => isCompatible(connector, row));
 }
 

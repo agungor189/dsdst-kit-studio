@@ -43,6 +43,9 @@ export function createApp(db: Database.Database, options: AppOptions = {}) {
   app.use((error: unknown, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
     if (error instanceof ZodError) return res.status(400).json({ error: "VALIDATION_ERROR", issues: error.issues });
     if (error instanceof multer.MulterError) return res.status(400).json({ error: "UPLOAD_ERROR", message: error.message });
+    if (error instanceof Error && error.message.startsWith("CATALOG_ECONOMICS_UNKNOWN")) {
+      return res.status(409).json({ error: "CATALOG_ECONOMICS_UNKNOWN", detail: error.message });
+    }
     console.error(error);
     res.status(500).json({ error: "INTERNAL_ERROR" });
   });

@@ -6,10 +6,13 @@ import { z } from "zod";
 import { fetchPanelProductImage, getPanelSyncStats, syncPanelConnectors } from "../services/panelClient.js";
 
 function profileRows(db: Database.Database) {
-  return db.prepare(`SELECT p.*, ps.shape, ps.material, ps.width_mm, ps.height_mm, ps.outside_diameter_mm,
+  return db.prepare(`SELECT p.*,
+    CASE WHEN p.cost_status='KNOWN' THEN p.purchase_price_per_meter_cents END purchase_price_per_meter_cents,
+    CASE WHEN p.sale_price_status='KNOWN' THEN p.sale_price_per_meter_cents END sale_price_per_meter_cents,
+    ps.shape, ps.material, ps.width_mm, ps.height_mm, ps.outside_diameter_mm,
     ps.nominal_size, ps.wall_thickness_mm, COALESCE(ps.size_compatibility_group,ps.compatibility_group) compatibility_group, s.name supplier_name
     FROM profiles p JOIN profile_specs ps ON ps.id=p.spec_id
-    LEFT JOIN suppliers s ON s.id=p.supplier_id WHERE p.active=1 AND COALESCE(p.catalog_active,1)=1 ORDER BY p.name`).all();
+    LEFT JOIN suppliers s ON s.id=p.supplier_id WHERE p.active=1 AND p.catalog_source='PANEL' AND p.catalog_active=1 AND p.catalog_version_ref IS NOT NULL ORDER BY p.name`).all();
 }
 
 export async function validImage(buffer: Buffer, mimetype: string) {
@@ -44,11 +47,14 @@ export function createCatalogRouter(db: Database.Database) {
     res.json({
       user: req.user,
       profiles: profileRows(db),
-      complementaryProducts: db.prepare("SELECT cp.*, s.name supplier_name FROM complementary_products cp LEFT JOIN suppliers s ON s.id=cp.supplier_id WHERE cp.active=1 AND COALESCE(cp.catalog_active,1)=1 ORDER BY cp.name").all(),
-      connectors: db.prepare(`SELECT pc.*, cc.connector_role, cc.compatibility_group, cc.profile_shape,cc.compatible_material_group,
+      complementaryProducts: db.prepare("SELECT cp.*, CASE WHEN cp.cost_status='KNOWN' THEN cp.purchase_unit_price_cents END purchase_unit_price_cents, CASE WHEN cp.sale_price_status='KNOWN' THEN cp.sale_unit_price_cents END sale_unit_price_cents, s.name supplier_name FROM complementary_products cp LEFT JOIN suppliers s ON s.id=cp.supplier_id WHERE cp.active=1 AND cp.catalog_source='PANEL' AND cp.catalog_active=1 AND cp.catalog_version_ref IS NOT NULL ORDER BY cp.name").all(),
+      connectors: db.prepare(`SELECT pc.*,
+        CASE WHEN pc.cost_status='KNOWN' THEN pc.purchase_cost_cents END purchase_cost_cents,
+        CASE WHEN pc.sale_price_status='KNOWN' THEN pc.sale_price_cents END sale_price_cents,
+        cc.connector_role, cc.compatibility_group, cc.profile_shape,cc.compatible_material_group,
         cc.profile_width_mm,cc.profile_height_mm,cc.outside_diameter_mm,cc.nominal_size,cc.wall_min_mm,cc.wall_max_mm
         FROM panel_connector_cache pc LEFT JOIN connector_compatibility cc ON cc.product_id=pc.product_id
-        WHERE pc.catalog_active=1 ORDER BY pc.compatibility_status, cc.connector_role, pc.sku`).all(),
+        WHERE pc.catalog_active=1 AND pc.catalog_version_ref IS NOT NULL ORDER BY pc.compatibility_status, cc.connector_role, pc.sku`).all(),
       suppliers: db.prepare("SELECT * FROM suppliers WHERE active=1 ORDER BY name").all(),
       settings: Object.fromEntries((db.prepare("SELECT key,value FROM app_settings").all() as { key: string; value: string }[]).map((row) => [row.key, row.value])),
       sync: getPanelSyncStats(db),
@@ -87,7 +93,7 @@ export function createCatalogRouter(db: Database.Database) {
 
   router.get("/profiles", (_req, res) => res.json(profileRows(db)));
 
-  router.get("/complementary-products", (_req, res) => res.json(db.prepare("SELECT * FROM complementary_products WHERE COALESCE(catalog_active,1)=1 ORDER BY active DESC,name").all()));
+  router.get("/complementary-products", (_req, res) => res.json(db.prepare("SELECT *, CASE WHEN cost_status='KNOWN' THEN purchase_unit_price_cents END purchase_unit_price_cents, CASE WHEN sale_price_status='KNOWN' THEN sale_unit_price_cents END sale_unit_price_cents FROM complementary_products WHERE active=1 AND catalog_source='PANEL' AND catalog_active=1 AND catalog_version_ref IS NOT NULL ORDER BY name").all()));
 
   return router;
 }

@@ -185,7 +185,7 @@ test("conversion preview is read-only and a full alternative saves as an indepen
 
 test("partial conversion reports the missing model and profile variants recalculate weight and profit", async () => {
   db.prepare("INSERT INTO profile_specs (id,shape,material,width_mm,height_mm,wall_thickness_mm,compatibility_group,size_compatibility_group) VALUES ('spec-sq20-heavy','SQUARE','Aluminum',20,20,2.5,'SQ-20X20|heavy','SQ-20X20')").run();
-  db.prepare("INSERT INTO profiles (id,spec_id,name,raw_length_mm,weight_per_meter_kg,purchase_price_per_meter_cents,sale_price_per_meter_cents,markup_basis_points) VALUES ('profile-sq20-heavy','spec-sq20-heavy','Square 20×20 Aluminum 2.5 mm',6000,0.65,14000,20000,4286)").run();
+  db.prepare("INSERT INTO profiles (id,spec_id,name,raw_length_mm,weight_per_meter_kg,purchase_price_per_meter_cents,sale_price_per_meter_cents,markup_basis_points,catalog_source,catalog_active,catalog_version_ref,uom_registry_version,base_uom_code,cost_status,sale_price_status) VALUES ('profile-sq20-heavy','spec-sq20-heavy','Square 20×20 Aluminum 2.5 mm',6000,0.65,14000,20000,4286,'PANEL',1,'catalog-product:profile-sq20-heavy:v1','uom-registry:v1','meter','KNOWN','KNOWN')").run();
   const created = await (await fetch(`${baseUrl}/api/kits`, json("POST", { name: "Kârlı Kit", profile_id: "profile-sq20", sale_price_cents: 210000 }))).json() as any;
   const sourceId = created.variants[0].id;
   await fetch(`${baseUrl}/api/variants/${sourceId}`, json("PUT", { profile_id: "profile-sq20", connectors: [{ role: "ELB", quantity: 4 }, { role: "3W", quantity: 2 }], cuts: [{ quantity: 6, length_mm: 1000 }], complementary_items: [] }));

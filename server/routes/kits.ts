@@ -10,6 +10,7 @@ import { canonicalSizeKey, isCompatible, resolveConnector } from "../services/co
 import { conversionOptions, deriveKit, previewVariantConversion } from "../services/conversionService.js";
 import { quoteCatalogSelection, savePricingSnapshot, variantDetail } from "../services/variantService.js";
 import { ensureOwnedUploadDirectory, removeOwnedUploadFile, removeOwnedUploadReference } from "../services/fileContainment.js";
+import { assertKnownCatalogEconomics } from "../services/catalogEconomics.js";
 
 const connectorInput = z.object({ role: z.string().min(2), quantity: z.number().int().positive(), product_id: z.string().optional() });
 const imageUpload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 5 * 1024 * 1024, files: 8 } });
@@ -59,6 +60,8 @@ export function createKitsRouter(db: Database.Database) {
     } catch (error) {
       const message = error instanceof Error ? error.message : "INVALID_QUOTE";
       if (message.startsWith("INVALID_")) return res.status(400).json({ error: message });
+      if (message.startsWith("CATALOG_ECONOMICS_UNKNOWN")) return res.status(409).json({ error: "CATALOG_ECONOMICS_UNKNOWN", detail: message });
+      if (message.startsWith("PIECE_QUANTITY_MUST_BE_INTEGER")) return res.status(400).json({ error: "PIECE_QUANTITY_MUST_BE_INTEGER", detail: message });
       throw error;
     }
   });
@@ -129,7 +132,7 @@ export function createKitsRouter(db: Database.Database) {
   router.post("/kits", (req, res) => {
     const body = kitMetaInput.extend({ profile_id: z.string().min(1).nullable().optional(), variant_name: z.string().optional() }).parse(req.body);
     if (body.sku && db.prepare("SELECT 1 FROM kits WHERE sku=? COLLATE NOCASE AND deleted_at IS NULL").get(body.sku)) return res.status(409).json({ error: "DUPLICATE_SKU" });
-    const profile = body.profile_id ? db.prepare("SELECT id,name FROM profiles WHERE id=? AND active=1").get(body.profile_id) as any : null;
+    const profile = body.profile_id ? db.prepare("SELECT id,name FROM profiles WHERE id=? AND active=1 AND catalog_source='PANEL' AND catalog_active=1 AND catalog_version_ref IS NOT NULL").get(body.profile_id) as any : null;
     if (body.profile_id && !profile) return res.status(400).json({ error: "INVALID_PROFILE" });
     const kitId = crypto.randomUUID(); const variantId = crypto.randomUUID();
     db.transaction(() => {
@@ -157,16 +160,18 @@ export function createKitsRouter(db: Database.Database) {
     const variant = db.prepare("SELECT id,kit_id,status FROM kit_variants WHERE id=?").get(req.params.id) as any;
     if (!variant) return res.status(404).json({ error: "NOT_FOUND" });
     if (variant.status === "APPROVED") return res.status(409).json({ error: "APPROVED_VARIANT_REQUIRES_NEW_VERSION" });
-    const profile = body.profile_id ? db.prepare("SELECT * FROM profiles WHERE id=? AND active=1").get(body.profile_id) as any : null;
+    const profile = body.profile_id ? db.prepare("SELECT * FROM profiles WHERE id=? AND active=1 AND catalog_source='PANEL' AND catalog_active=1 AND catalog_version_ref IS NOT NULL").get(body.profile_id) as any : null;
     if (body.profile_id && !profile) return res.status(400).json({ error: "INVALID_PROFILE" });
     if (!profile && body.cuts.length) return res.status(400).json({ error: "PROFILE_REQUIRED_FOR_CUTS" });
     if (profile && body.cuts.some((cut) => cut.length_mm > Number(profile.raw_length_mm))) return res.status(400).json({ error: "CUT_LONGER_THAN_RAW_PROFILE" });
-    const complementaryLookup = db.prepare("SELECT * FROM complementary_products WHERE id=? AND active=1");
+    if (profile) assertKnownCatalogEconomics(profile, "PROFILE");
+    const complementaryLookup = db.prepare("SELECT * FROM complementary_products WHERE id=? AND active=1 AND catalog_source='PANEL' AND catalog_active=1 AND catalog_version_ref IS NOT NULL");
     const resolved = body.connectors.map((line) => {
-      const connector = line.product_id ? db.prepare("SELECT pc.*,cc.connector_role,cc.compatibility_group,cc.profile_shape,cc.profile_width_mm,cc.profile_height_mm,cc.outside_diameter_mm,cc.nominal_size,cc.compatible_material_group,cc.wall_min_mm,cc.wall_max_mm FROM panel_connector_cache pc LEFT JOIN connector_compatibility cc ON cc.product_id=pc.product_id WHERE pc.product_id=? AND pc.catalog_active=1").get(line.product_id) as any : body.profile_id ? resolveConnector(db, line.role, body.profile_id) as any : null;
+      const connector = line.product_id ? db.prepare("SELECT pc.*,cc.connector_role,cc.compatibility_group,cc.profile_shape,cc.profile_width_mm,cc.profile_height_mm,cc.outside_diameter_mm,cc.nominal_size,cc.compatible_material_group,cc.wall_min_mm,cc.wall_max_mm FROM panel_connector_cache pc LEFT JOIN connector_compatibility cc ON cc.product_id=pc.product_id WHERE pc.product_id=? AND pc.catalog_active=1 AND pc.catalog_version_ref IS NOT NULL").get(line.product_id) as any : body.profile_id ? resolveConnector(db, line.role, body.profile_id) as any : null;
       if (line.product_id && !connector) throw new Error(`INVALID_CONNECTOR:${line.product_id}`);
       if (connector?.connector_role && connector.connector_role !== line.role) throw new Error(`ROLE_MISMATCH:${line.role}`);
       if (connector && !connector.connector_role) connector.connector_role = line.role;
+      if (connector) assertKnownCatalogEconomics(connector, "CONNECTOR");
       return { ...line, connector };
     });
     const missing = resolved.filter((line) => !line.connector).map((line) => line.role);
@@ -182,7 +187,8 @@ export function createKitsRouter(db: Database.Database) {
     const complements = body.complementary_items.map((line) => {
       const product = complementaryLookup.get(line.product_id) as any;
       if (!product) throw new Error(`INVALID_COMPLEMENTARY:${line.product_id}`);
-      if (product.unit_type === "PIECE" && !Number.isInteger(line.quantity)) throw new Error(`PIECE_QUANTITY_MUST_BE_INTEGER:${line.product_id}`);
+      assertKnownCatalogEconomics(product, "COMPLEMENTARY");
+      if (product.base_uom_code === "piece" && !Number.isInteger(line.quantity)) throw new Error(`PIECE_QUANTITY_MUST_BE_INTEGER:${line.product_id}`);
       return { ...line, product };
     });
     db.transaction(() => {
@@ -271,6 +277,12 @@ export function createKitsRouter(db: Database.Database) {
     const variant = db.prepare("SELECT status,kit_id FROM kit_variants WHERE id=?").get(req.params.id) as any;
     if (!variant) return res.status(404).json({ error: "NOT_FOUND" });
     if (variant.status === "APPROVED") return res.status(409).json({ error: "APPROVED_VARIANT_REQUIRES_NEW_VERSION" });
+    const unknown = db.prepare(`SELECT 1 FROM (
+      SELECT pc.cost_status,pc.sale_price_status FROM kit_variant_connectors line JOIN panel_connector_cache pc ON pc.product_id=line.product_id WHERE line.variant_id=?
+      UNION ALL SELECT p.cost_status,p.sale_price_status FROM kit_variant_profiles line JOIN profiles p ON p.id=line.profile_id WHERE line.variant_id=?
+      UNION ALL SELECT cp.cost_status,cp.sale_price_status FROM kit_variant_complementary_items line JOIN complementary_products cp ON cp.id=line.complementary_product_id WHERE line.variant_id=?
+    ) WHERE cost_status!='KNOWN' OR sale_price_status!='KNOWN' LIMIT 1`).get(req.params.id, req.params.id, req.params.id);
+    if (unknown) return res.status(409).json({ error: "CATALOG_ECONOMICS_UNKNOWN" });
     db.prepare(`UPDATE kit_variant_connectors SET purchase_price_snapshot_cents=(SELECT purchase_cost_cents FROM panel_connector_cache WHERE product_id=kit_variant_connectors.product_id),
       sale_price_snapshot_cents=(SELECT sale_price_cents FROM panel_connector_cache WHERE product_id=kit_variant_connectors.product_id),
       unit_weight_snapshot_grams=(SELECT unit_weight_grams FROM panel_connector_cache WHERE product_id=kit_variant_connectors.product_id)
@@ -296,7 +308,7 @@ export function createKitsRouter(db: Database.Database) {
     const body = z.object({ target_profile_id: z.string().min(1), name: z.string().optional() }).parse(req.body);
     const source = variantDetail(db, req.params.id);
     if (!source) return res.status(404).json({ error: "NOT_FOUND" });
-    const targetProfile = db.prepare("SELECT p.*,COALESCE(ps.size_compatibility_group,ps.compatibility_group) compatibility_group FROM profiles p JOIN profile_specs ps ON ps.id=p.spec_id WHERE p.id=? AND p.active=1").get(body.target_profile_id) as any;
+    const targetProfile = db.prepare("SELECT p.*,COALESCE(ps.size_compatibility_group,ps.compatibility_group) compatibility_group FROM profiles p JOIN profile_specs ps ON ps.id=p.spec_id WHERE p.id=? AND p.active=1 AND p.catalog_source='PANEL' AND p.catalog_active=1 AND p.catalog_version_ref IS NOT NULL").get(body.target_profile_id) as any;
     if (!targetProfile) return res.status(400).json({ error: "INVALID_PROFILE" });
     const newVariantId = crypto.randomUUID();
     const resolved = source.connectors.map((line: any) => ({ line, connector: resolveConnector(db, line.connector_role, body.target_profile_id) as any }));
@@ -317,7 +329,7 @@ export function createKitsRouter(db: Database.Database) {
       for (const line of source.complementary_items) insertComplement.run(crypto.randomUUID(), newVariantId, line.complementary_product_id, line.quantity_milli, line.purchase_price_snapshot_cents, line.sale_price_snapshot_cents, line.markup_basis_points_snapshot, line.weight_per_unit_snapshot_grams, line.product_name_snapshot, line.unit_type_snapshot);
       db.prepare("UPDATE kits SET updated_at=CURRENT_TIMESTAMP WHERE id=?").run(source.kit_id);
     })();
-    savePricingSnapshot(db, newVariantId, "VARIANT_CONVERTED");
+    if (!missing.length) savePricingSnapshot(db, newVariantId, "VARIANT_CONVERTED");
     res.status(201).json(variantDetail(db, newVariantId));
   });
 
