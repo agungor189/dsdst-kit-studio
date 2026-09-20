@@ -9,6 +9,7 @@ import { validImage } from "./catalog.js";
 import { canonicalSizeKey, isCompatible, resolveConnector } from "../services/compatibility.js";
 import { conversionOptions, deriveKit, previewVariantConversion } from "../services/conversionService.js";
 import { quoteCatalogSelection, savePricingSnapshot, variantDetail } from "../services/variantService.js";
+import { removeOwnedUploadFile } from "../services/fileContainment.js";
 
 const connectorInput = z.object({ role: z.string().min(2), quantity: z.number().int().positive(), product_id: z.string().optional() });
 const imageUpload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 5 * 1024 * 1024, files: 8 } });
@@ -105,10 +106,10 @@ export function createKitsRouter(db: Database.Database) {
   router.delete("/kits/:kitId/images/:imageId", (req, res) => {
     const image = db.prepare("SELECT image_path FROM kit_images WHERE id=? AND kit_id=?").get(req.params.imageId, req.params.kitId) as { image_path: string } | undefined;
     if (!image) return res.status(404).json({ error: "NOT_FOUND" });
-    db.prepare("DELETE FROM kit_images WHERE id=?").run(req.params.imageId);
     const uploadRoot = path.resolve(process.env.UPLOAD_DIR || "uploads");
-    const absolute = path.resolve(uploadRoot, image.image_path.replace(/^\/uploads\//, ""));
-    if (absolute.startsWith(`${uploadRoot}${path.sep}`) && fs.existsSync(absolute)) fs.unlinkSync(absolute);
+    const removal = removeOwnedUploadFile(uploadRoot, image.image_path);
+    db.prepare("DELETE FROM kit_images WHERE id=?").run(req.params.imageId);
+    if (removal === "rejected") return res.json({ success: true, file_removed: false });
     res.json({ success: true });
   });
 

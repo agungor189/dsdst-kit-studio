@@ -53,3 +53,25 @@ test("profile and kit accept multiple validated images", async () => {
   const deleted = await fetch(`${baseUrl}/api/kits/${kit.id}/images/${withImages.images[0].id}`, { method: "DELETE" });
   assert.equal(deleted.status, 200);
 });
+
+test("kit image deletion cannot follow an uploads symlink to an outside file", async () => {
+  const kit = await (await fetch(`${baseUrl}/api/kits`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ name: "Symlink Guard Kit", profile_id: "profile-sq20" }),
+  })).json() as any;
+  const outsideDir = fs.mkdtempSync(path.join(os.tmpdir(), "kit-studio-outside-"));
+  const outsideFile = path.join(outsideDir, "secret.png");
+  fs.writeFileSync(outsideFile, "do-not-delete");
+  fs.symlinkSync(outsideDir, path.join(uploadDir, "escape"), "dir");
+  db.prepare("INSERT INTO kit_images (id,kit_id,image_path,sort_order) VALUES (?,?,?,0)")
+    .run("unsafe-image", kit.id, "/uploads/escape/secret.png");
+  try {
+    const response = await fetch(`${baseUrl}/api/kits/${kit.id}/images/unsafe-image`, { method: "DELETE" });
+    assert.equal(response.status, 200);
+    assert.equal(fs.readFileSync(outsideFile, "utf8"), "do-not-delete");
+    assert.equal(db.prepare("SELECT 1 FROM kit_images WHERE id='unsafe-image'").get(), undefined);
+  } finally {
+    fs.rmSync(outsideDir, { recursive: true, force: true });
+  }
+});
