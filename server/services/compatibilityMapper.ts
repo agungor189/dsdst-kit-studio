@@ -1,4 +1,19 @@
-import type { PanelConnector } from "./panelClient.js";
+type PanelConnectorDescriptor = {
+  id?: string;
+  sku: string;
+  title?: string;
+  form?: string;
+  form_code?: string;
+  tube_type_code?: string;
+  size_code?: string;
+  size?: string;
+  pipe_size?: string;
+  material?: string;
+  normalized_material?: string;
+  normalized_size?: string;
+  normalized_tube_type?: string;
+  normalized_pipe_size?: string;
+};
 
 export type MappedCompatibility = {
   status: "COMPATIBLE" | "UNRESOLVED";
@@ -82,7 +97,7 @@ function parseRound(value: unknown) {
   return millimeters ? { od: Number(millimeters), nominal: undefined } : undefined;
 }
 
-function materialFromFields(row: PanelConnector) {
+function materialFromFields(row: PanelConnectorDescriptor) {
   const value = token(row.normalized_material || row.material);
   if (!value) return undefined;
   if (value.includes("ALUMIN") || value.includes("ALUMINYUM")) return "ALUMINUM";
@@ -117,7 +132,7 @@ export function parseConnectorSku(sku: string): Partial<MappedCompatibility> {
   };
 }
 
-export function mapPanelConnector(row: PanelConnector): MappedCompatibility {
+export function mapPanelConnector(row: PanelConnectorDescriptor): MappedCompatibility {
   const parsedSku = parseConnectorSku(row.sku);
   const structuredRole = roleFrom(row.form_code || row.form);
   const structuredShape = shapeFrom(row.tube_type_code || row.normalized_tube_type);

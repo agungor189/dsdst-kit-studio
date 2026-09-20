@@ -26,31 +26,27 @@ test("image decoding rejects MIME spoofing and header-only/truncated files", asy
   assert.equal(await validImage(validPngBytes, "image/png"), true);
 });
 
-test("complementary product upload rejects invalid image contents", async () => {
+test("complementary product catalog mutations are blocked before upload handling", async () => {
   const form = new FormData();
   form.append("image", new Blob(["not-a-real-png"], { type: "image/png" }), "fake.png");
   const response = await fetch(`${baseUrl}/api/complementary-products/comp-mdf/image`, { method: "POST", body: form });
-  assert.equal(response.status, 415);
-  assert.deepEqual(await response.json(), { error: "INVALID_IMAGE" });
+  assert.equal(response.status, 410);
+  assert.deepEqual(await response.json(), { error: "CATALOG_READ_ONLY", message: "Kit Studio catalog is a read-only projection of Panel catalog v1." });
 });
 
-test("catalog derives profile and complementary sale prices from purchase and markup", async () => {
+test("profile and complementary catalog writes cannot create a second authority", async () => {
   const headers = { "content-type": "application/json" };
   const profileResponse = await fetch(`${baseUrl}/api/profiles`, { method: "POST", headers, body: JSON.stringify({ name: "PCI 25 Profil", shape: "SQUARE", material: "PREMIUM_CAST_IRON", width_mm: 25, height_mm: 25, wall_thickness_mm: 2.5, compatibility_group: "SQ-25X25", raw_length_mm: 6000, weight_per_meter_kg: 1.2, purchase_price_per_meter_cents: 10000, markup_basis_points: 6000 }) });
-  assert.equal(profileResponse.status, 201); const profile = await profileResponse.json() as any;
-  const editedProfile = await fetch(`${baseUrl}/api/profiles/${profile.id}`, { method: "PUT", headers, body: JSON.stringify({ name: "PCI 25 Profil", shape: "SQUARE", material: "PREMIUM_CAST_IRON", width_mm: 25, height_mm: 25, wall_thickness_mm: 3, compatibility_group: "SQ-25X25", raw_length_mm: 6000, weight_per_meter_kg: 1.3, purchase_price_per_meter_cents: 11000, markup_basis_points: 5000 }) });
-  assert.equal(editedProfile.status, 200); assert.equal((await editedProfile.json() as any).wall_thickness_mm, 3);
+  assert.equal(profileResponse.status, 410);
   const complementResponse = await fetch(`${baseUrl}/api/complementary-products`, { method: "POST", headers, body: JSON.stringify({ name: "Özel Tabla", unit_type: "M2", purchase_unit_price_cents: 20000, markup_basis_points: 6000, weight_per_unit_grams: 350 }) });
-  assert.equal(complementResponse.status, 201); const complement = await complementResponse.json() as any;
-  const editedComplement = await fetch(`${baseUrl}/api/complementary-products/${complement.id}`, { method: "PUT", headers, body: JSON.stringify({ name: "Özel Tabla", unit_type: "M2", purchase_unit_price_cents: 21000, markup_basis_points: 5000, weight_per_unit_grams: 375 }) });
-  assert.equal(editedComplement.status, 200); const edited = await editedComplement.json() as any; assert.equal(edited.sale_unit_price_cents, 31500); assert.equal(edited.weight_per_unit_grams, 375);
+  assert.equal(complementResponse.status, 410);
 });
 
-test("profile and kit accept multiple validated images", async () => {
+test("profile images are read-only while kit draft images remain writable", async () => {
   const png = new Blob([validPngBytes], { type: "image/png" });
   const profileForm = new FormData(); profileForm.append("image", png, "profile.png");
   const profileUpload = await fetch(`${baseUrl}/api/profiles/profile-sq20/image`, { method: "POST", body: profileForm });
-  assert.equal(profileUpload.status, 200);
+  assert.equal(profileUpload.status, 410);
   const kit = await (await fetch(`${baseUrl}/api/kits`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ name: "Görselli Kit", profile_id: "profile-sq20" }) })).json() as any;
   const kitForm = new FormData(); kitForm.append("images", png, "one.png"); kitForm.append("images", png, "two.png");
   const kitUpload = await fetch(`${baseUrl}/api/kits/${kit.id}/images`, { method: "POST", body: kitForm });
@@ -60,7 +56,7 @@ test("profile and kit accept multiple validated images", async () => {
   assert.equal(deleted.status, 200);
 });
 
-test("upload root and nested parent symlinks fail closed without writing outside", async () => {
+test("read-only profile upload path does not follow upload-root symlinks", async () => {
   const sandbox = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "kit-upload-root-")));
   const outside = path.join(sandbox, "outside");
   const rootLink = path.join(sandbox, "root-link");
@@ -75,7 +71,7 @@ test("upload root and nested parent symlinks fail closed without writing outside
       const form = new FormData();
       form.append("image", new Blob([validPngBytes], { type: "image/png" }), "safe.png");
       const response = await fetch(`${baseUrl}/api/profiles/profile-sq20/image`, { method: "POST", body: form });
-      assert.equal(response.status, 500);
+      assert.equal(response.status, 410);
       assert.deepEqual(fs.readdirSync(outside).sort(), []);
     }
   } finally {
