@@ -4,7 +4,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
 import Database from "better-sqlite3";
-import { CURRENT_SCHEMA_VERSION, getMigrationManifest, runMigrations, SUPPORTED_UPGRADE_STARTS, validateMigrationManifest } from "./migrate.js";
+import { CURRENT_SCHEMA_VERSION, getMigrationManifest, resolveMigrationDirectory, runMigrations, SUPPORTED_UPGRADE_STARTS, validateMigrationManifest } from "./migrate.js";
 
 const migrationDirectory = fileURLToPath(new URL("./migrations/", import.meta.url));
 const count = (db: Database.Database, table: string): number => Number(
@@ -108,4 +108,9 @@ test("frozen migration history rejects retroactive insertion or replacement", ()
   const manifest = getMigrationManifest();
   manifest[2] = { version: 3, name: "003_retroactive.sql", checksum: "0".repeat(64) };
   assert.throws(() => validateMigrationManifest(manifest), /Frozen migration mismatch at v3/);
+});
+
+test("compiled server runtime resolves the packaged source migration directory", () => {
+  assert.equal(resolveMigrationDirectory([path.join(migrationDirectory, "missing"), migrationDirectory]), migrationDirectory);
+  assert.throws(() => resolveMigrationDirectory([path.join(migrationDirectory, "missing")]), /Migration directory is missing/);
 });

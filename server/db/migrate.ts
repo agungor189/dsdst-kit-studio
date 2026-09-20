@@ -4,7 +4,16 @@ import { createHash } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import Database from "better-sqlite3";
 
-const migrationDir = fileURLToPath(new URL("./migrations/", import.meta.url));
+export function resolveMigrationDirectory(candidates = [
+  fileURLToPath(new URL("./migrations/", import.meta.url)),
+  path.resolve(process.cwd(), "server/db/migrations"),
+]): string {
+  const resolved = candidates.find((candidate) => fs.existsSync(candidate) && fs.statSync(candidate).isDirectory());
+  if (!resolved) throw new Error(`Migration directory is missing; checked: ${candidates.join(", ")}`);
+  return resolved;
+}
+
+const migrationDir = resolveMigrationDirectory();
 
 export const CURRENT_SCHEMA_VERSION = 6;
 export const SUPPORTED_UPGRADE_STARTS = [1, 5] as const;
