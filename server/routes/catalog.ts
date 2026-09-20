@@ -4,9 +4,11 @@ import path from "node:path";
 import type Database from "better-sqlite3";
 import express from "express";
 import multer from "multer";
+import sharp from "sharp";
 import { z } from "zod";
 import { fetchPanelProductImage, getPanelSyncStats, syncPanelConnectors } from "../services/panelClient.js";
 import { priceWithMarkup } from "../services/pricing.js";
+import { ensureOwnedUploadDirectory, removeOwnedUploadFile } from "../services/fileContainment.js";
 
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 5 * 1024 * 1024, files: 1 } });
 const money = z.number().int().nonnegative();
@@ -32,11 +34,19 @@ function profileRows(db: Database.Database) {
     LEFT JOIN suppliers s ON s.id=p.supplier_id WHERE p.active=1 AND COALESCE(p.catalog_active,1)=1 ORDER BY p.name`).all();
 }
 
-export function validImage(buffer: Buffer, mimetype: string) {
-  if (mimetype === "image/png") return buffer.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]));
-  if (mimetype === "image/jpeg") return buffer[0] === 0xff && buffer[1] === 0xd8 && buffer[2] === 0xff;
-  if (mimetype === "image/webp") return buffer.subarray(0, 4).toString() === "RIFF" && buffer.subarray(8, 12).toString() === "WEBP";
-  return false;
+export async function validImage(buffer: Buffer, mimetype: string) {
+  const expected = mimetype === "image/jpeg" ? "jpeg" : mimetype === "image/png" ? "png" : mimetype === "image/webp" ? "webp" : null;
+  if (!expected) return false;
+  try {
+    const image = sharp(buffer, { failOn: "error", limitInputPixels: 25_000_000, sequentialRead: true });
+    const metadata = await image.metadata();
+    if (metadata.format !== expected || !metadata.width || !metadata.height) return false;
+    if (metadata.width * metadata.height > 25_000_000 || Number(metadata.pages || 1) !== 1) return false;
+    await image.clone().raw().toBuffer();
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 export function createCatalogRouter(db: Database.Database) {
@@ -146,17 +156,22 @@ export function createCatalogRouter(db: Database.Database) {
   });
 
   function saveImage(table: "profiles" | "complementary_products", folder: string) {
-    return (req: express.Request, res: express.Response) => {
-      const file = req.file;
-      if (!file || !validImage(file.buffer, file.mimetype)) return res.status(415).json({ error: "INVALID_IMAGE" });
-      const extension = file.mimetype === "image/png" ? ".png" : file.mimetype === "image/jpeg" ? ".jpg" : ".webp";
-      const uploadRoot = path.resolve(process.env.UPLOAD_DIR || "uploads");
-      const directory = path.join(uploadRoot, folder); fs.mkdirSync(directory, { recursive: true });
-      const filename = `${crypto.randomUUID()}${extension}`; fs.writeFileSync(path.join(directory, filename), file.buffer, { flag: "wx" });
-      const imagePath = `/uploads/${folder}/${filename}`;
-      const result = db.prepare(`UPDATE ${table} SET image_path=?,updated_at=CURRENT_TIMESTAMP WHERE id=?`).run(imagePath, req.params.id);
-      if (!result.changes) { fs.unlinkSync(path.join(directory, filename)); return res.status(404).json({ error: "NOT_FOUND" }); }
-      return res.json({ image_path: imagePath });
+    return async (req: express.Request, res: express.Response, next: express.NextFunction) => {
+      try {
+        const file = req.file;
+        if (!file || !(await validImage(file.buffer, file.mimetype))) return res.status(415).json({ error: "INVALID_IMAGE" });
+        const extension = file.mimetype === "image/png" ? ".png" : file.mimetype === "image/jpeg" ? ".jpg" : ".webp";
+        const uploadRoot = path.resolve(process.env.UPLOAD_DIR || "uploads");
+        const directory = ensureOwnedUploadDirectory(uploadRoot, [folder]);
+        const filename = `${crypto.randomUUID()}${extension}`;
+        fs.writeFileSync(path.join(directory, filename), file.buffer, { flag: "wx", mode: 0o600 });
+        const imagePath = `/uploads/${folder}/${filename}`;
+        const result = db.prepare(`UPDATE ${table} SET image_path=?,updated_at=CURRENT_TIMESTAMP WHERE id=?`).run(imagePath, req.params.id);
+        if (!result.changes) { removeOwnedUploadFile(uploadRoot, imagePath); return res.status(404).json({ error: "NOT_FOUND" }); }
+        return res.json({ image_path: imagePath });
+      } catch (error) {
+        return next(error);
+      }
     };
   }
 

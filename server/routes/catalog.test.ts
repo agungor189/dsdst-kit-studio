@@ -8,16 +8,22 @@ import { createApp } from "../app.js";
 import { openDatabase } from "../db/index.js";
 import { validImage } from "./catalog.js";
 
+const validPngBytes = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=", "base64");
+
 let db: Database.Database; let server: ReturnType<ReturnType<typeof createApp>["listen"]>; let baseUrl = ""; let uploadDir = "";
 before(async () => {
-  uploadDir = fs.mkdtempSync(path.join(os.tmpdir(), "kit-studio-test-")); process.env.UPLOAD_DIR = uploadDir;
+  uploadDir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "kit-studio-test-"))); process.env.UPLOAD_DIR = uploadDir;
   db = openDatabase(":memory:"); server = createApp(db, { authDisabled: true }).listen(0); await new Promise<void>((resolve) => server.once("listening", resolve));
   const address = server.address(); if (!address || typeof address === "string") throw new Error("Server did not start"); baseUrl = `http://127.0.0.1:${address.port}`;
 });
 after(() => { server.close(); db.close(); fs.rmSync(uploadDir, { recursive: true, force: true }); delete process.env.UPLOAD_DIR; });
 
-test("image signature validation rejects MIME-spoofed files", () => {
-  assert.equal(validImage(Buffer.from("not-a-real-png"), "image/png"), false);
+test("image decoding rejects MIME spoofing and header-only/truncated files", async () => {
+  assert.equal(await validImage(Buffer.from("not-a-real-png"), "image/png"), false);
+  assert.equal(await validImage(validPngBytes.subarray(0, 8), "image/png"), false);
+  assert.equal(await validImage(Buffer.from([0xff, 0xd8, 0xff, 0xe0]), "image/jpeg"), false);
+  assert.equal(await validImage(Buffer.from("RIFFxxxxWEBPgarbage"), "image/webp"), false);
+  assert.equal(await validImage(validPngBytes, "image/png"), true);
 });
 
 test("complementary product upload rejects invalid image contents", async () => {
@@ -41,7 +47,7 @@ test("catalog derives profile and complementary sale prices from purchase and ma
 });
 
 test("profile and kit accept multiple validated images", async () => {
-  const png = new Blob([new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a])], { type: "image/png" });
+  const png = new Blob([validPngBytes], { type: "image/png" });
   const profileForm = new FormData(); profileForm.append("image", png, "profile.png");
   const profileUpload = await fetch(`${baseUrl}/api/profiles/profile-sq20/image`, { method: "POST", body: profileForm });
   assert.equal(profileUpload.status, 200);
@@ -52,6 +58,30 @@ test("profile and kit accept multiple validated images", async () => {
   assert.equal(withImages.images.length, 2); assert.equal(withImages.thumbnail, withImages.images[0].image_path);
   const deleted = await fetch(`${baseUrl}/api/kits/${kit.id}/images/${withImages.images[0].id}`, { method: "DELETE" });
   assert.equal(deleted.status, 200);
+});
+
+test("upload root and nested parent symlinks fail closed without writing outside", async () => {
+  const sandbox = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "kit-upload-root-")));
+  const outside = path.join(sandbox, "outside");
+  const rootLink = path.join(sandbox, "root-link");
+  const parentLink = path.join(sandbox, "parent-link");
+  fs.mkdirSync(outside);
+  fs.symlinkSync(outside, rootLink, "dir");
+  fs.symlinkSync(outside, parentLink, "dir");
+  const priorRoot = process.env.UPLOAD_DIR;
+  try {
+    for (const unsafeRoot of [rootLink, path.join(parentLink, "nested-root")]) {
+      process.env.UPLOAD_DIR = unsafeRoot;
+      const form = new FormData();
+      form.append("image", new Blob([validPngBytes], { type: "image/png" }), "safe.png");
+      const response = await fetch(`${baseUrl}/api/profiles/profile-sq20/image`, { method: "POST", body: form });
+      assert.equal(response.status, 500);
+      assert.deepEqual(fs.readdirSync(outside).sort(), []);
+    }
+  } finally {
+    process.env.UPLOAD_DIR = priorRoot;
+    fs.rmSync(sandbox, { recursive: true, force: true });
+  }
 });
 
 test("kit image deletion cannot follow an uploads symlink to an outside file", async () => {
@@ -74,4 +104,28 @@ test("kit image deletion cannot follow an uploads symlink to an outside file", a
   } finally {
     fs.rmSync(outsideDir, { recursive: true, force: true });
   }
+});
+
+test("kit image delete restores the file when the DB mutation fails, then succeeds on retry", async () => {
+  const kit = await (await fetch(`${baseUrl}/api/kits`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ name: "DB Failure Guard Kit", profile_id: "profile-sq20" }),
+  })).json() as any;
+  const directory = path.join(uploadDir, "kits", kit.id);
+  const file = path.join(directory, "kept.png");
+  fs.mkdirSync(directory, { recursive: true });
+  fs.writeFileSync(file, validPngBytes);
+  db.prepare("INSERT INTO kit_images (id,kit_id,image_path,sort_order) VALUES (?,?,?,0)")
+    .run("db-failure-image", kit.id, `/uploads/kits/${kit.id}/kept.png`);
+  db.exec("CREATE TRIGGER fail_kit_image_delete BEFORE DELETE ON kit_images WHEN OLD.id='db-failure-image' BEGIN SELECT RAISE(ABORT, 'simulated delete failure'); END;");
+  const failed = await fetch(`${baseUrl}/api/kits/${kit.id}/images/db-failure-image`, { method: "DELETE" });
+  assert.equal(failed.status, 500);
+  assert.equal(fs.readFileSync(file).equals(validPngBytes), true);
+  assert.ok(db.prepare("SELECT 1 FROM kit_images WHERE id='db-failure-image'").get());
+  db.exec("DROP TRIGGER fail_kit_image_delete");
+  const retried = await fetch(`${baseUrl}/api/kits/${kit.id}/images/db-failure-image`, { method: "DELETE" });
+  assert.equal(retried.status, 200);
+  assert.equal(fs.existsSync(file), false);
+  assert.equal(db.prepare("SELECT 1 FROM kit_images WHERE id='db-failure-image'").get(), undefined);
 });

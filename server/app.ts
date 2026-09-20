@@ -12,12 +12,14 @@ import { createCatalogRouter } from "./routes/catalog.js";
 import { createCompatibilityRouter } from "./routes/compatibility.js";
 import { createKitsRouter } from "./routes/kits.js";
 import { defaultPanelAuthClient, type PanelAuthClient, type PanelUser } from "./services/panelAuthClient.js";
+import { ensureOwnedUploadRoot } from "./services/fileContainment.js";
 import type { LoginRateLimitOptions } from "./middleware/loginRateLimit.js";
 
 type AppOptions = { authDisabled?: boolean; testUser?: PanelUser; panelAuthClient?: PanelAuthClient; loginRateLimit?: LoginRateLimitOptions };
 
 export function createApp(db: Database.Database, options: AppOptions = {}) {
   const app = express();
+  const uploadRoot = ensureOwnedUploadRoot(process.env.UPLOAD_DIR || "uploads");
   const trustProxyHops = Number(process.env.TRUST_PROXY_HOPS || 0);
   if (Number.isInteger(trustProxyHops) && trustProxyHops > 0) app.set("trust proxy", trustProxyHops);
   const panelAuthClient = options.panelAuthClient || defaultPanelAuthClient;
@@ -26,7 +28,7 @@ export function createApp(db: Database.Database, options: AppOptions = {}) {
   app.use(helmet({ contentSecurityPolicy: false, crossOriginResourcePolicy: { policy: "cross-origin" } }));
   app.use(cors({ origin: (origin, callback) => callback(null, !origin || allowedOrigins.includes(origin)), credentials: true }));
   app.use(express.json({ limit: "1mb" }));
-  app.use("/uploads", express.static(path.resolve(process.env.UPLOAD_DIR || "uploads"), { fallthrough: false, dotfiles: "deny", immutable: true, maxAge: "1d" }));
+  app.use("/uploads", express.static(uploadRoot, { fallthrough: false, dotfiles: "deny", immutable: true, maxAge: "1d" }));
   app.get("/api/health", (_req, res) => res.json({ status: "ok" }));
   app.use("/api/auth", createAuthRouter(panelAuthClient, options.loginRateLimit));
   const authenticated = options.authDisabled ? createTestAuth(options.testUser) : createAppAuth(panelAuthClient);

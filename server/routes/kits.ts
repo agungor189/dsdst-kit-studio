@@ -9,7 +9,7 @@ import { validImage } from "./catalog.js";
 import { canonicalSizeKey, isCompatible, resolveConnector } from "../services/compatibility.js";
 import { conversionOptions, deriveKit, previewVariantConversion } from "../services/conversionService.js";
 import { quoteCatalogSelection, savePricingSnapshot, variantDetail } from "../services/variantService.js";
-import { removeOwnedUploadFile } from "../services/fileContainment.js";
+import { ensureOwnedUploadDirectory, removeOwnedUploadFile, removeOwnedUploadReference } from "../services/fileContainment.js";
 
 const connectorInput = z.object({ role: z.string().min(2), quantity: z.number().int().positive(), product_id: z.string().optional() });
 const imageUpload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 5 * 1024 * 1024, files: 8 } });
@@ -83,33 +83,46 @@ export function createKitsRouter(db: Database.Database) {
     res.status(201).json(kitDetail(db, result.kitId));
   });
 
-  router.post("/kits/:id/images", imageUpload.array("images", 8), (req, res) => {
-    const kitId = String(req.params.id);
-    if (!db.prepare("SELECT 1 FROM kits WHERE id=? AND deleted_at IS NULL").get(kitId)) return res.status(404).json({ error: "NOT_FOUND" });
-    const files = (req.files || []) as Express.Multer.File[];
-    if (!files.length || files.some((file) => !validImage(file.buffer, file.mimetype))) return res.status(415).json({ error: "INVALID_IMAGE" });
-    const uploadRoot = path.resolve(process.env.UPLOAD_DIR || "uploads");
-    const directory = path.join(uploadRoot, "kits", kitId); fs.mkdirSync(directory, { recursive: true });
-    const currentOrder = Number((db.prepare("SELECT MAX(sort_order) value FROM kit_images WHERE kit_id=?").get(kitId) as any)?.value ?? -1) + 1;
-    const written: string[] = [];
+  router.post("/kits/:id/images", imageUpload.array("images", 8), async (req, res, next) => {
     try {
-      db.transaction(() => files.forEach((file, index) => {
-        const extension = file.mimetype === "image/png" ? ".png" : file.mimetype === "image/jpeg" ? ".jpg" : ".webp";
-        const filename = `${crypto.randomUUID()}${extension}`; const absolute = path.join(directory, filename);
-        fs.writeFileSync(absolute, file.buffer, { flag: "wx" }); written.push(absolute);
-        db.prepare("INSERT INTO kit_images (id,kit_id,image_path,sort_order) VALUES (?,?,?,?)").run(crypto.randomUUID(), kitId, `/uploads/kits/${kitId}/${filename}`, currentOrder + index);
-      }))();
-    } catch (error) { for (const file of written) if (fs.existsSync(file)) fs.unlinkSync(file); throw error; }
-    res.status(201).json(kitDetail(db, kitId));
+      const kitId = String(req.params.id);
+      if (!db.prepare("SELECT 1 FROM kits WHERE id=? AND deleted_at IS NULL").get(kitId)) return res.status(404).json({ error: "NOT_FOUND" });
+      const files = (req.files || []) as Express.Multer.File[];
+      if (!files.length || (await Promise.all(files.map((file) => validImage(file.buffer, file.mimetype)))).some((valid) => !valid)) {
+        return res.status(415).json({ error: "INVALID_IMAGE" });
+      }
+      const uploadRoot = path.resolve(process.env.UPLOAD_DIR || "uploads");
+      const directory = ensureOwnedUploadDirectory(uploadRoot, ["kits", kitId]);
+      const currentOrder = Number((db.prepare("SELECT MAX(sort_order) value FROM kit_images WHERE kit_id=?").get(kitId) as any)?.value ?? -1) + 1;
+      const written: string[] = [];
+      try {
+        db.transaction(() => files.forEach((file, index) => {
+          const extension = file.mimetype === "image/png" ? ".png" : file.mimetype === "image/jpeg" ? ".jpg" : ".webp";
+          const filename = `${crypto.randomUUID()}${extension}`;
+          const imagePath = `/uploads/kits/${kitId}/${filename}`;
+          fs.writeFileSync(path.join(directory, filename), file.buffer, { flag: "wx", mode: 0o600 });
+          written.push(imagePath);
+          db.prepare("INSERT INTO kit_images (id,kit_id,image_path,sort_order) VALUES (?,?,?,?)").run(crypto.randomUUID(), kitId, imagePath, currentOrder + index);
+        }))();
+      } catch (error) {
+        for (const storedPath of written) removeOwnedUploadFile(uploadRoot, storedPath);
+        throw error;
+      }
+      return res.status(201).json(kitDetail(db, kitId));
+    } catch (error) {
+      return next(error);
+    }
   });
 
   router.delete("/kits/:kitId/images/:imageId", (req, res) => {
     const image = db.prepare("SELECT image_path FROM kit_images WHERE id=? AND kit_id=?").get(req.params.imageId, req.params.kitId) as { image_path: string } | undefined;
     if (!image) return res.status(404).json({ error: "NOT_FOUND" });
     const uploadRoot = path.resolve(process.env.UPLOAD_DIR || "uploads");
-    const removal = removeOwnedUploadFile(uploadRoot, image.image_path);
-    db.prepare("DELETE FROM kit_images WHERE id=?").run(req.params.imageId);
+    const removal = removeOwnedUploadReference(uploadRoot, image.image_path, () => {
+      db.prepare("DELETE FROM kit_images WHERE id=?").run(req.params.imageId);
+    });
     if (removal === "rejected") return res.json({ success: true, file_removed: false });
+    if (removal === "cleanup_pending") return res.json({ success: true, file_removed: false, cleanup_pending: true });
     res.json({ success: true });
   });
 
