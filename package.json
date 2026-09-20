@@ -10,6 +10,7 @@
     "start": "tsx server/index.ts",
     "typecheck": "tsc --noEmit && tsc -p tsconfig.server.json --noEmit",
     "test": "node --import tsx --test server/**/*.test.ts test/*.test.ts",
+    "test:known-red": "node --import tsx --test server/oracles/*.test.ts",
     "db:migrate": "tsx server/db/migrate-cli.ts"
   },
   "dependencies": {
