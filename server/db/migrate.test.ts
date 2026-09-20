@@ -4,7 +4,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
 import Database from "better-sqlite3";
-import { CURRENT_SCHEMA_VERSION, getMigrationManifest, runMigrations, SUPPORTED_UPGRADE_STARTS } from "./migrate.js";
+import { CURRENT_SCHEMA_VERSION, getMigrationManifest, runMigrations, SUPPORTED_UPGRADE_STARTS, validateMigrationManifest } from "./migrate.js";
 
 const migrationDirectory = fileURLToPath(new URL("./migrations/", import.meta.url));
 const count = (db: Database.Database, table: string): number => Number(
@@ -74,8 +74,38 @@ test("migration metadata mismatch and unknown versions fail closed", () => {
   runMigrations(db);
   db.prepare("UPDATE schema_migrations SET checksum = ? WHERE version = 1").run("0".repeat(64));
   assert.throws(() => runMigrations(db), /Migration v1 checksum mismatch/);
-  db.prepare("DELETE FROM schema_migrations WHERE version = 1").run();
-  db.prepare("INSERT INTO schema_migrations (version, name, checksum) VALUES (99, 'future.sql', ?)").run("0".repeat(64));
-  assert.throws(() => runMigrations(db), /unsupported migration version v99/);
   db.close();
+
+  const future = new Database(":memory:");
+  runMigrations(future);
+  future.prepare("INSERT INTO schema_migrations (version, name, checksum) VALUES (99, 'future.sql', ?)").run("0".repeat(64));
+  assert.throws(() => runMigrations(future), /unsupported migration version v99/);
+  future.close();
+});
+
+test("migration history rejects gaps and claimed schema effects that are absent", () => {
+  const deletedV1 = new Database(":memory:");
+  runMigrations(deletedV1);
+  deletedV1.prepare("DELETE FROM schema_migrations WHERE version = 1").run();
+  assert.throws(() => runMigrations(deletedV1), /history.*prefix|missing.*v1/i);
+  deletedV1.close();
+
+  const missingEffect = new Database(":memory:");
+  runMigrations(missingEffect);
+  missingEffect.exec("DROP TABLE suppliers");
+  assert.throws(() => runMigrations(missingEffect), /schema effect|suppliers/i);
+  missingEffect.close();
+
+  const unverifiableNull = new Database(":memory:");
+  runMigrations(unverifiableNull);
+  unverifiableNull.prepare("UPDATE schema_migrations SET checksum = NULL WHERE version = 1").run();
+  unverifiableNull.exec("DROP TABLE suppliers");
+  assert.throws(() => runMigrations(unverifiableNull), /schema effect|checksum history|suppliers/i);
+  unverifiableNull.close();
+});
+
+test("frozen migration history rejects retroactive insertion or replacement", () => {
+  const manifest = getMigrationManifest();
+  manifest[2] = { version: 3, name: "003_retroactive.sql", checksum: "0".repeat(64) };
+  assert.throws(() => validateMigrationManifest(manifest), /Frozen migration mismatch at v3/);
 });
