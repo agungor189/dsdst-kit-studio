@@ -36,7 +36,7 @@ export function createAppAuth(client: PanelAuthClient) {
   };
 }
 
-export function createTestAuth(user: PanelUser = { id: "test-admin", username: "test-admin", role: "admin", permissions: [], must_change_password: false }) {
+export function createTestAuth(user: PanelUser = { id: "test-admin", username: "test-admin", role: "admin", permissions: {}, must_change_password: false }) {
   return (req: Request, _res: Response, next: NextFunction) => { req.user = user; next(); };
 }
 
@@ -45,8 +45,14 @@ export function requireBusinessAccess(req: Request, res: Response, next: NextFun
   next();
 }
 
-export function requireWriteAccess(req: Request, res: Response, next: NextFunction) {
-  if (req.method !== "GET" && req.method !== "HEAD" && req.user?.role === "readonly") return res.status(403).json({ error: "READ_ONLY" });
+export function userHasKitCapability(user: PanelUser | undefined, capability: "kits:view" | "kits:write" | "kits:approve") {
+  return Boolean(user && (user.role === "admin" || user.permissions?.[capability] === true));
+}
+
+export function requireKitAccess(req: Request, res: Response, next: NextFunction) {
+  const safe = req.method === "GET" || req.method === "HEAD";
+  const capability = safe ? "kits:view" : /^\/variants\/[^/]+\/approve$/.test(req.path) ? "kits:approve" : "kits:write";
+  if (!userHasKitCapability(req.user, capability)) return res.status(403).json({ error: "FORBIDDEN", required: capability });
   next();
 }
 

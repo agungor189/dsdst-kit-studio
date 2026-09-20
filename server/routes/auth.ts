@@ -24,17 +24,21 @@ export function createAuthRouter(client: PanelAuthClient, rateLimitOptions?: Log
     } catch (error) { authFailure(res, error); }
   });
   router.get("/me", authenticated, (req, res) => res.json({ user: req.user }));
-  router.post("/logout", (_req, res) => {
-    res.clearCookie(SESSION_COOKIE, clearSessionCookieOptions());
-    res.status(204).end();
+  router.post("/logout", authenticated, async (req, res) => {
+    try {
+      await client.logout(req.panelJwt!);
+      res.clearCookie(SESSION_COOKIE, clearSessionCookieOptions());
+      res.status(204).end();
+    } catch (error) { authFailure(res, error); }
   });
   router.post("/change-password", authenticated, async (req, res) => {
     const parsed = z.object({ current_password: z.string().min(1), new_password: z.string().min(8) }).safeParse(req.body);
     if (!parsed.success) return res.status(400).json({ error: "VALIDATION_ERROR", issues: parsed.error.issues });
     const body = parsed.data;
     try {
-      const user = await client.changePassword(req.panelJwt!, body.current_password, body.new_password);
-      res.json({ user });
+      const result = await client.changePassword(req.panelJwt!, body.current_password, body.new_password);
+      res.cookie(SESSION_COOKIE, result.token, sessionCookieOptions());
+      res.json({ user: result.user });
     } catch (error) { authFailure(res, error); }
   });
   return router;

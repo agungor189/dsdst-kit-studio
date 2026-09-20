@@ -8,14 +8,15 @@ import type { PanelAuthClient, PanelUser } from "../services/panelAuthClient.js"
 
 let db: Database.Database; let server: ReturnType<ReturnType<typeof createApp>["listen"]>; let baseUrl = "";
 const users: Record<string, PanelUser> = {
-  admin: { id: "1", username: "admin", role: "admin", permissions: ["all"], must_change_password: false },
-  readonly: { id: "2", username: "readonly", role: "readonly", permissions: [], must_change_password: false },
-  forced: { id: "3", username: "forced", role: "user", permissions: [], must_change_password: true },
+  admin: { id: "1", username: "admin", role: "admin", permissions: {}, must_change_password: false },
+  readonly: { id: "2", username: "readonly", role: "readonly", permissions: { "kits:view": true }, must_change_password: false },
+  forced: { id: "3", username: "forced", role: "user", permissions: { "kits:view": true }, must_change_password: true },
 };
 const client: PanelAuthClient = {
   async login(username, password) { if (password !== "correct" || !users[username]) throw Object.assign(new Error("invalid"), { status: 401 }); return { token: username, user: users[username] }; },
   async me(token) { if (!users[token]) throw Object.assign(new Error("invalid"), { status: 401 }); return users[token]; },
-  async changePassword(token) { users[token] = { ...users[token], must_change_password: false }; return users[token]; },
+  async changePassword(token) { users[token] = { ...users[token], must_change_password: false }; return { token: `${token}-replacement`, user: users[token] }; },
+  async logout() {},
 };
 
 before(async () => {
@@ -47,7 +48,7 @@ test("readonly users can read but server rejects mutations", async () => {
   assert.equal((await fetch(`${baseUrl}/api/bootstrap`, { headers: { cookie } })).status, 200);
   const response = await fetch(`${baseUrl}/api/kits`, { method: "POST", headers: { cookie, "content-type": "application/json" }, body: "{}" });
   assert.equal(response.status, 403);
-  assert.equal((await response.json() as any).error, "READ_ONLY");
+  assert.equal((await response.json() as any).error, "FORBIDDEN");
 });
 
 test("must-change-password blocks business APIs but allows the password proxy", async () => {
@@ -58,8 +59,9 @@ test("must-change-password blocks business APIs but allows the password proxy", 
   assert.equal((await changed.json() as any).user.must_change_password, false);
 });
 
-test("logout clears the session cookie", async () => {
-  const response = await fetch(`${baseUrl}/api/auth/logout`, { method: "POST" });
+test("logout revokes the Panel session before clearing the session cookie", async () => {
+  const { cookie } = await login("admin");
+  const response = await fetch(`${baseUrl}/api/auth/logout`, { method: "POST", headers: { cookie } });
   assert.equal(response.status, 204);
   assert.match(response.headers.get("set-cookie") || "", /dsdst_kit_session=;/);
 });

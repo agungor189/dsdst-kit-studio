@@ -38,7 +38,7 @@ export default function App() {
   if (!user) return <LoginScreen onSubmit={login} error={message}/>;
   if (user.must_change_password) return <PasswordChange user={user} onChanged={(next) => { setUser(next); void loadAll(); }} onLogout={logout}/>;
   if (!data) return <div className="loading">Katalog hazırlanıyor…</div>;
-  const canWrite = user.role !== "readonly";
+  const canWrite = user.role === "admin" || user.permissions?.["kits:write"] === true;
   return <div className="app-shell">
     <header className="topbar"><div className="brand-mark"><Wrench size={18}/></div><div className="brand-copy"><strong>DSDST</strong><span>Kit Studio</span></div><nav><button className={view === "kits" ? "nav-active" : ""} onClick={() => setView("kits")}><Boxes size={16}/>Kitler</button>{canWrite && <button onClick={() => openEditor("create")}><Plus size={16}/>Yeni Kit</button>}<button className={view === "catalogs" ? "nav-active" : ""} onClick={() => setView("catalogs")}><Settings2 size={16}/>Katalog</button></nav><div className="user-chip"><strong>{user.username}</strong><span>{user.role}</span></div><button className="icon-button" onClick={logout}><LogOut size={18}/></button></header>
     {message && <div className="global-notice">{message}</div>}

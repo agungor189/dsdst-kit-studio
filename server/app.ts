@@ -6,7 +6,7 @@ import express from "express";
 import helmet from "helmet";
 import multer from "multer";
 import { ZodError } from "zod";
-import { createAppAuth, createTestAuth, requireBusinessAccess, requireWriteAccess } from "./middleware/appAuth.js";
+import { createAppAuth, createTestAuth, requireBusinessAccess, requireKitAccess } from "./middleware/appAuth.js";
 import { createAuthRouter } from "./routes/auth.js";
 import { createCatalogRouter } from "./routes/catalog.js";
 import { createCompatibilityRouter } from "./routes/compatibility.js";
@@ -32,7 +32,7 @@ export function createApp(db: Database.Database, options: AppOptions = {}) {
   app.get("/api/health", (_req, res) => res.json({ status: "ok" }));
   app.use("/api/auth", createAuthRouter(panelAuthClient, options.loginRateLimit));
   const authenticated = options.authDisabled ? createTestAuth(options.testUser) : createAppAuth(panelAuthClient);
-  app.use("/api", authenticated, requireBusinessAccess, requireWriteAccess, createCatalogRouter(db), createCompatibilityRouter(db), createKitsRouter(db));
+  app.use("/api", authenticated, requireBusinessAccess, requireKitAccess, createCatalogRouter(db), createCompatibilityRouter(db), createKitsRouter(db));
 
   const dist = path.resolve("dist");
   if (fs.existsSync(dist)) {
