@@ -2,6 +2,7 @@ import crypto from "node:crypto";
 import type Database from "better-sqlite3";
 import { calculatePricing } from "./pricing.js";
 import { assertKnownCatalogEconomics } from "./catalogEconomics.js";
+import { complementaryQuantityMilli } from "./catalogQuantity.js";
 
 export function variantDetail(db: Database.Database, variantId: string) {
   const variant = db.prepare(`SELECT v.*,k.name kit_name,k.sku kit_sku,k.sale_price_cents,k.labor_cost_cents,k.packaging_cost_cents,k.other_cost_cents,p.name profile_name,COALESCE(ps.size_compatibility_group,ps.compatibility_group) compatibility_group,ps.shape,ps.material,ps.width_mm,ps.height_mm,ps.outside_diameter_mm,ps.nominal_size,ps.wall_thickness_mm
@@ -20,7 +21,8 @@ export function variantDetail(db: Database.Database, variantId: string) {
     WHERE line.variant_id=?`).get(variantId) as any;
   variant.cuts = variant.profile ? db.prepare("SELECT * FROM kit_variant_profile_cuts WHERE variant_profile_id=? ORDER BY length_mm DESC").all(variant.profile.id) : [];
   variant.complementary_items = db.prepare(`SELECT line.*,product.image_path current_image,product.name current_name,product.catalog_source,product.catalog_active,
-    product.purchase_unit_price_cents current_purchase_price_cents,product.markup_basis_points current_markup_basis_points,product.weight_per_unit_grams current_weight_per_unit_grams
+    product.purchase_unit_price_cents current_purchase_price_cents,product.markup_basis_points current_markup_basis_points,product.weight_per_unit_grams current_weight_per_unit_grams,
+    product.cost_status,product.sale_price_status,product.base_uom_code current_base_uom_code,product.material_behavior current_material_behavior
     FROM kit_variant_complementary_items line LEFT JOIN complementary_products product ON product.id=line.complementary_product_id
     WHERE line.variant_id=? ORDER BY line.product_name_snapshot`).all(variantId);
   try {
@@ -74,7 +76,7 @@ export function quoteCatalogSelection(db: Database.Database, input: { profile_id
   const connectorQuery = db.prepare("SELECT product_id,sku sku_snapshot,name_tr product_name_snapshot,purchase_cost_cents purchase_price_snapshot_cents,sale_price_cents sale_price_snapshot_cents,unit_weight_grams unit_weight_snapshot_grams,cost_status,sale_price_status FROM panel_connector_cache WHERE product_id=? AND catalog_active=1 AND catalog_version_ref IS NOT NULL");
   const connectors = input.connectors.map((line) => { const product = connectorQuery.get(line.product_id) as any; if (!product) throw new Error(`INVALID_CONNECTOR:${line.product_id}`); assertKnownCatalogEconomics(product, "CONNECTOR"); return { ...product, quantity: line.quantity }; });
   const complementQuery = db.prepare("SELECT id,id complementary_product_id,name product_name_snapshot,purchase_unit_price_cents purchase_price_snapshot_cents,sale_unit_price_cents sale_price_snapshot_cents,markup_basis_points markup_basis_points_snapshot,weight_per_unit_grams weight_per_unit_snapshot_grams,cost_status,sale_price_status,base_uom_code FROM complementary_products WHERE id=? AND active=1 AND catalog_source='PANEL' AND catalog_active=1 AND catalog_version_ref IS NOT NULL");
-  const complementary = input.complementary_items.map((line) => { const product = complementQuery.get(line.product_id) as any; if (!product) throw new Error(`INVALID_COMPLEMENTARY:${line.product_id}`); assertKnownCatalogEconomics(product, "COMPLEMENTARY"); if (product.base_uom_code === "piece" && !Number.isInteger(line.quantity)) throw new Error(`PIECE_QUANTITY_MUST_BE_INTEGER:${line.product_id}`); return { ...product, quantity_milli: Math.round(line.quantity * 1000) }; });
+  const complementary = input.complementary_items.map((line) => { const product = complementQuery.get(line.product_id) as any; if (!product) throw new Error(`INVALID_COMPLEMENTARY:${line.product_id}`); assertKnownCatalogEconomics(product, "COMPLEMENTARY"); return { ...product, quantity_milli: complementaryQuantityMilli(product, line.quantity) }; });
   const vatRate = Number((db.prepare("SELECT value FROM app_settings WHERE key='vat_rate_basis_points'").get() as any)?.value || 2000);
   return calculatePricing({ connectors, profile, cuts: input.cuts, complementary, vatRateBasisPoints: vatRate, laborCostCents: input.labor_cost_cents, packagingCostCents: input.packaging_cost_cents, otherCostCents: input.other_cost_cents });
 }

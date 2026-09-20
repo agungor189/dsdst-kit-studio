@@ -26,12 +26,12 @@ export function seedDevelopmentData(db: Database.Database) {
   profiles.forEach((row) => profileStmt.run(...row, `catalog-product:${row[0]}:v1`));
 
   const complements = [
-    ["comp-mdf", "MDF Tabla", "MDF-18", "18 mm kesilmiş MDF raf tablası", "M2", 19500, 28500, 4615, 3500, "sup-abc"],
-    ["comp-wheel", "Frenli Tekerlek", "WH-75-B", "75 mm frenli endüstriyel tekerlek", "PIECE", 8500, 13500, 5882, 850, "sup-mob"],
-    ["comp-pvc", "PVC Kaplama", "PVC-GR", "Gri profil kaplama şeridi", "METER", 2200, 3900, 7727, 90, "sup-abc"],
+    ["comp-mdf", "MDF Tabla", "MDF-18", "18 mm kesilmiş MDF raf tablası", "square_meter", 19500, 28500, 4615, 3500, "sup-abc"],
+    ["comp-wheel", "Frenli Tekerlek", "WH-75-B", "75 mm frenli endüstriyel tekerlek", "piece", 8500, 13500, 5882, 850, "sup-mob"],
+    ["comp-pvc", "PVC Kaplama", "PVC-GR", "Gri profil kaplama şeridi", "meter", 2200, 3900, 7727, 90, "sup-abc"],
   ];
-  const compStmt = db.prepare("INSERT OR IGNORE INTO complementary_products (id,name,sku_optional,description,unit_type,purchase_unit_price_cents,sale_unit_price_cents,markup_basis_points,weight_per_unit_grams,supplier_id,catalog_source,catalog_active,catalog_version_ref,uom_registry_version,base_uom_code,cost_status,sale_price_status) VALUES (?,?,?,?,?,?,?,?,?,?,'PANEL',1,?,'uom-registry:v1',?,'KNOWN','KNOWN')");
-  complements.forEach((row) => compStmt.run(...row, `catalog-product:${row[0]}:v1`, row[4] === "M2" ? "square_meter" : row[4] === "METER" ? "meter" : "piece"));
+  const compStmt = db.prepare("INSERT OR IGNORE INTO complementary_products (id,name,sku_optional,description,legacy_unit_type,unit_type,purchase_unit_price_cents,sale_unit_price_cents,markup_basis_points,weight_per_unit_grams,supplier_id,catalog_source,catalog_active,catalog_version_ref,uom_registry_version,base_uom_code,cost_status,sale_price_status) VALUES (?,?,?,?,?,?,?,?,?,?,?,'PANEL',1,?,'uom-registry:v1',?,'KNOWN','KNOWN')");
+  complements.forEach((row) => compStmt.run(row[0], row[1], row[2], row[3], row[4] === "meter" ? "METER" : row[4] === "square_meter" ? "M2" : "PIECE", row[4], ...row.slice(5), `catalog-product:${row[0]}:v1`, row[4]));
 
   const connectorStmt = db.prepare("INSERT OR IGNORE INTO panel_connector_cache (product_id,sku,name_tr,name_en,material,form,size,purchase_cost_cents,sale_price_cents,unit_weight_grams,central_stock,panel_updated_at,compatibility_status,compatibility_source,catalog_active,catalog_version_ref,uom_registry_version,base_uom_code,cost_status,sale_price_status) VALUES (?,?,?,?,?,?,?,?,?,?,?,?, 'COMPATIBLE','MANUAL',1,?,'uom-registry:v1','piece','KNOWN','KNOWN')");
   const compatibilityStmt = db.prepare("INSERT OR IGNORE INTO connector_compatibility (id,product_id,connector_role,profile_shape,profile_width_mm,profile_height_mm,outside_diameter_mm,nominal_size,compatible_material_group,wall_min_mm,wall_max_mm,compatibility_group) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)");

@@ -9,6 +9,7 @@ export type PanelCatalogProduct = {
   base_uom: { code: "piece" | "meter" | "square_meter" | "kg" | "roll" | "package" | "box"; base_quantum: string; quantity_scale: number };
   dimensions: { length_mm: number | null; width_mm: number | null; height_mm: number | null; diameter_mm: number | null };
   mass_grams: number | null;
+  material_behavior?: "continuous_cut" | null;
   profile?: null | { material: string; form: string; width_mm: string | null; height_mm: string | null; diameter_mm: string | null; wall_thickness_mm: string; width_micrometers: number | null; height_micrometers: number | null; diameter_micrometers: number | null; wall_thickness_micrometers: number; standard_purchase_lengths_mm: number[]; custom_length_allowed: boolean };
   supplier_code?: string; material?: string; form?: string; form_code?: string;
   tube_type_code?: string; size_code?: string; size?: string; pipe_size?: string;
@@ -150,13 +151,14 @@ export async function syncPanelConnectors(db: Database.Database, fetchImpl: type
           standard_lengths: JSON.stringify(row.profile.standard_purchase_lengths_mm), custom_length_allowed: row.profile.custom_length_allowed ? 1 : 0 });
       }
       db.prepare("UPDATE complementary_products SET catalog_active=0 WHERE catalog_source='PANEL'").run();
-      const upsertComplement = db.prepare(`INSERT INTO complementary_products (id,name,sku_optional,description,unit_type,purchase_unit_price_cents,sale_unit_price_cents,markup_basis_points,weight_per_unit_grams,image_path,notes,active,catalog_source,panel_updated_at,catalog_active,catalog_version_ref,uom_registry_version,base_uom_code)
-        VALUES (@id,@name,@sku,NULL,@unit,0,0,0,@weight,@image,NULL,1,'PANEL',@updated_at,1,@catalog_version_ref,@uom_registry_version,@base_uom_code)
-        ON CONFLICT(id) DO UPDATE SET name=excluded.name,sku_optional=excluded.sku_optional,unit_type=excluded.unit_type,weight_per_unit_grams=COALESCE(excluded.weight_per_unit_grams,complementary_products.weight_per_unit_grams),image_path=excluded.image_path,active=1,catalog_source='PANEL',panel_updated_at=excluded.panel_updated_at,catalog_active=1,catalog_version_ref=excluded.catalog_version_ref,uom_registry_version=excluded.uom_registry_version,base_uom_code=excluded.base_uom_code,cost_status='UNKNOWN',sale_price_status='UNKNOWN',updated_at=CURRENT_TIMESTAMP`);
+      const upsertComplement = db.prepare(`INSERT INTO complementary_products (id,name,sku_optional,description,legacy_unit_type,unit_type,purchase_unit_price_cents,sale_unit_price_cents,markup_basis_points,weight_per_unit_grams,image_path,notes,active,catalog_source,panel_updated_at,catalog_active,catalog_version_ref,uom_registry_version,base_uom_code,material_behavior)
+        VALUES (@id,@name,@sku,NULL,@legacy_unit,@unit,0,0,0,@weight,@image,NULL,1,'PANEL',@updated_at,1,@catalog_version_ref,@uom_registry_version,@base_uom_code,@material_behavior)
+        ON CONFLICT(id) DO UPDATE SET name=excluded.name,sku_optional=excluded.sku_optional,unit_type=excluded.unit_type,weight_per_unit_grams=COALESCE(excluded.weight_per_unit_grams,complementary_products.weight_per_unit_grams),image_path=excluded.image_path,active=1,catalog_source='PANEL',panel_updated_at=excluded.panel_updated_at,catalog_active=1,catalog_version_ref=excluded.catalog_version_ref,uom_registry_version=excluded.uom_registry_version,base_uom_code=excluded.base_uom_code,material_behavior=excluded.material_behavior,cost_status='UNKNOWN',sale_price_status='UNKNOWN',updated_at=CURRENT_TIMESTAMP`);
       for (const row of complements) {
-        const unit = row.base_uom.code === "square_meter" ? "M2" : row.base_uom.code === "meter" ? "METER" : "PIECE";
-        upsertComplement.run({ id: row.id, name: row.title, sku: row.sku, unit, weight: row.mass_grams, image: row.image || null, updated_at: row.updated_at || null,
-          catalog_version_ref: row.catalog_version_ref, uom_registry_version: row.uom_registry_version, base_uom_code: row.base_uom.code });
+        const legacyUnit = row.base_uom.code === "meter" ? "METER" : row.base_uom.code === "square_meter" ? "M2" : "PIECE";
+        upsertComplement.run({ id: row.id, name: row.title, sku: row.sku, legacy_unit: legacyUnit, unit: row.base_uom.code, weight: row.mass_grams, image: row.image || null, updated_at: row.updated_at || null,
+          catalog_version_ref: row.catalog_version_ref, uom_registry_version: row.uom_registry_version, base_uom_code: row.base_uom.code,
+          material_behavior: row.material_behavior || null });
       }
       setting(db, "panel_profile_count", String(profiles.length)); setting(db, "panel_complement_count", String(complements.length));
       setting(db, "panel_reachable", "true"); setting(db, "panel_last_synced_at", syncedAt); setting(db, "panel_last_error", "");

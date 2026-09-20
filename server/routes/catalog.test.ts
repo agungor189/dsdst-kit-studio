@@ -45,7 +45,7 @@ test("profile and complementary catalog writes cannot create a second authority"
 test("legacy local catalog records remain readable historically but are not selectable for new work", async () => {
   db.prepare("INSERT INTO profile_specs (id,shape,material,compatibility_group) VALUES ('legacy-spec','SQUARE','Legacy','LEGACY-1')").run();
   db.prepare("INSERT INTO profiles (id,spec_id,name) VALUES ('legacy-profile','legacy-spec','Legacy profile')").run();
-  db.prepare("INSERT INTO complementary_products (id,name,unit_type) VALUES ('legacy-complement','Legacy complement','PIECE')").run();
+  db.prepare("INSERT INTO complementary_products (id,name,legacy_unit_type,unit_type) VALUES ('legacy-complement','Legacy complement','PIECE','piece')").run();
   const bootstrap = await (await fetch(`${baseUrl}/api/bootstrap`)).json() as any;
   assert.equal(bootstrap.profiles.some((row: any) => row.id === "legacy-profile"), false);
   assert.equal(bootstrap.complementaryProducts.some((row: any) => row.id === "legacy-complement"), false);

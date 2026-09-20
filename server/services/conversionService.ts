@@ -3,6 +3,7 @@ import type Database from "better-sqlite3";
 import { resolveConnector } from "./compatibility.js";
 import { calculatePricing } from "./pricing.js";
 import { variantDetail } from "./variantService.js";
+import { assertKnownCatalogEconomics } from "./catalogEconomics.js";
 
 function targetProfile(db: Database.Database, profileId: string) {
   return db.prepare(`SELECT p.*,ps.shape,ps.material,ps.width_mm,ps.height_mm,ps.outside_diameter_mm,ps.nominal_size,
@@ -24,12 +25,19 @@ export function previewVariantConversion(db: Database.Database, sourceVariantId:
   const source = variantDetail(db, sourceVariantId);
   const profile = targetProfile(db, targetProfileId);
   if (!source || !profile) return null;
+  assertKnownCatalogEconomics(profile, "PROFILE");
   if (source.cuts.some((cut: any) => Number(cut.length_mm) > Number(profile.raw_length_mm))) return null;
   const mapped = source.connectors.map((line: any) => ({
     role: line.connector_role, quantity: line.quantity,
     connector: resolveConnector(db, line.connector_role, targetProfileId) as any,
   }));
   const missingRoles = mapped.filter((line: any) => !line.connector).map((line: any) => line.role);
+  for (const line of mapped) {
+    if (line.connector) assertKnownCatalogEconomics(line.connector, "CONNECTOR");
+  }
+  for (const line of source.complementary_items) {
+    assertKnownCatalogEconomics(line, "COMPLEMENTARY");
+  }
   const resolvedCount = mapped.length - missingRoles.length;
   const connectors = mapped.filter((line: any) => line.connector).map((line: any) => ({
     quantity: line.quantity,
@@ -99,8 +107,8 @@ export function deriveKit(db: Database.Database, sourceVariantId: string, target
       .run(profileLineId, variantId, profile.id, profile.purchase_price_per_meter_cents, profile.sale_price_per_meter_cents, profile.markup_basis_points, profile.weight_per_meter_kg);
     const insertCut = db.prepare("INSERT INTO kit_variant_profile_cuts (id,variant_profile_id,quantity,length_mm,label) VALUES (?,?,?,?,?)");
     for (const cut of source.cuts) insertCut.run(crypto.randomUUID(), profileLineId, cut.quantity, cut.length_mm, cut.label ?? null);
-    const insertComplement = db.prepare(`INSERT INTO kit_variant_complementary_items (id,variant_id,complementary_product_id,quantity_milli,purchase_price_snapshot_cents,sale_price_snapshot_cents,markup_basis_points_snapshot,weight_per_unit_snapshot_grams,product_name_snapshot,unit_type_snapshot) VALUES (?,?,?,?,?,?,?,?,?,?)`);
-    for (const line of source.complementary_items) insertComplement.run(crypto.randomUUID(), variantId, line.complementary_product_id, line.quantity_milli, line.purchase_price_snapshot_cents, line.sale_price_snapshot_cents, line.markup_basis_points_snapshot, line.weight_per_unit_snapshot_grams, line.product_name_snapshot, line.unit_type_snapshot);
+    const insertComplement = db.prepare(`INSERT INTO kit_variant_complementary_items (id,variant_id,complementary_product_id,quantity_milli,purchase_price_snapshot_cents,sale_price_snapshot_cents,markup_basis_points_snapshot,weight_per_unit_snapshot_grams,product_name_snapshot,unit_type_snapshot,base_uom_code_snapshot) VALUES (?,?,?,?,?,?,?,?,?,?,?)`);
+    for (const line of source.complementary_items) insertComplement.run(crypto.randomUUID(), variantId, line.complementary_product_id, line.quantity_milli, line.purchase_price_snapshot_cents, line.sale_price_snapshot_cents, line.markup_basis_points_snapshot, line.weight_per_unit_snapshot_grams, line.product_name_snapshot, line.unit_type_snapshot, line.base_uom_code_snapshot || line.current_base_uom_code);
   })();
   db.prepare("UPDATE kits SET sale_price_cents=? WHERE id=?").run(preview.target.pricing.total_inc_vat_cents, kitId);
   return { kitId, variantId };

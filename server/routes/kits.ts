@@ -11,6 +11,7 @@ import { conversionOptions, deriveKit, previewVariantConversion } from "../servi
 import { quoteCatalogSelection, savePricingSnapshot, variantDetail } from "../services/variantService.js";
 import { ensureOwnedUploadDirectory, removeOwnedUploadFile, removeOwnedUploadReference } from "../services/fileContainment.js";
 import { assertKnownCatalogEconomics } from "../services/catalogEconomics.js";
+import { complementaryQuantityMilli } from "../services/catalogQuantity.js";
 
 const connectorInput = z.object({ role: z.string().min(2), quantity: z.number().int().positive(), product_id: z.string().optional() });
 const imageUpload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 5 * 1024 * 1024, files: 8 } });
@@ -61,27 +62,47 @@ export function createKitsRouter(db: Database.Database) {
       const message = error instanceof Error ? error.message : "INVALID_QUOTE";
       if (message.startsWith("INVALID_")) return res.status(400).json({ error: message });
       if (message.startsWith("CATALOG_ECONOMICS_UNKNOWN")) return res.status(409).json({ error: "CATALOG_ECONOMICS_UNKNOWN", detail: message });
-      if (message.startsWith("PIECE_QUANTITY_MUST_BE_INTEGER")) return res.status(400).json({ error: "PIECE_QUANTITY_MUST_BE_INTEGER", detail: message });
+      if (message.startsWith("DISCRETE_QUANTITY_MUST_BE_INTEGER")) return res.status(400).json({ error: "DISCRETE_QUANTITY_MUST_BE_INTEGER", detail: message });
+      if (message.startsWith("COMPLEMENTARY_QUANTITY_PRECISION_EXCEEDED") || message.startsWith("INVALID_COMPLEMENTARY_QUANTITY")) return res.status(400).json({ error: "INVALID_COMPLEMENTARY_QUANTITY", detail: message });
       throw error;
     }
   });
 
   router.get("/variants/:id/conversion-options", (req, res) => {
     const mode = req.query.mode === "profile" ? "profile" : "connector";
-    const options = conversionOptions(db, req.params.id, mode);
-    return options ? res.json({ mode, options }) : res.status(404).json({ error: "NOT_FOUND" });
+    try {
+      const options = conversionOptions(db, req.params.id, mode);
+      return options ? res.json({ mode, options }) : res.status(404).json({ error: "NOT_FOUND" });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "CONVERSION_FAILED";
+      if (message.startsWith("CATALOG_ECONOMICS_UNKNOWN")) return res.status(409).json({ error: "CATALOG_ECONOMICS_UNKNOWN", detail: message });
+      throw error;
+    }
   });
 
   router.post("/variants/:id/conversion-preview", (req, res) => {
     const body = z.object({ target_profile_id: z.string().min(1) }).parse(req.body);
-    const preview = previewVariantConversion(db, req.params.id, body.target_profile_id);
-    return preview ? res.json(preview) : res.status(404).json({ error: "NOT_FOUND" });
+    try {
+      const preview = previewVariantConversion(db, req.params.id, body.target_profile_id);
+      return preview ? res.json(preview) : res.status(404).json({ error: "NOT_FOUND" });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "CONVERSION_FAILED";
+      if (message.startsWith("CATALOG_ECONOMICS_UNKNOWN")) return res.status(409).json({ error: "CATALOG_ECONOMICS_UNKNOWN", detail: message });
+      throw error;
+    }
   });
 
   router.post("/variants/:id/derive", (req, res) => {
     const body = z.object({ target_profile_id: z.string().min(1), name: z.string().min(2), sku: z.string().trim().min(1).nullable().optional() }).parse(req.body);
     if (body.sku && db.prepare("SELECT 1 FROM kits WHERE sku=? COLLATE NOCASE AND deleted_at IS NULL").get(body.sku)) return res.status(409).json({ error: "DUPLICATE_SKU" });
-    const result = deriveKit(db, req.params.id, body.target_profile_id, body);
+    let result;
+    try {
+      result = deriveKit(db, req.params.id, body.target_profile_id, body);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "CONVERSION_FAILED";
+      if (message.startsWith("CATALOG_ECONOMICS_UNKNOWN")) return res.status(409).json({ error: "CATALOG_ECONOMICS_UNKNOWN", detail: message });
+      throw error;
+    }
     if ("error" in result) return res.status(result.error === "NOT_FOUND" ? 404 : 409).json({ error: result.error, missing: result.missing });
     res.status(201).json(kitDetail(db, result.kitId));
   });
@@ -184,13 +205,21 @@ export function createKitsRouter(db: Database.Database) {
       return isCompatible(line.connector, profileSpec) ? [] : [`${line.connector.sku}: ${line.connector.compatibility_group}, profil ${profileSpec.compatibility_group}`];
     });
     if (compatibilityWarnings.length) return res.status(409).json({ error: "INCOMPATIBLE_CONNECTOR", warnings: compatibilityWarnings });
-    const complements = body.complementary_items.map((line) => {
-      const product = complementaryLookup.get(line.product_id) as any;
-      if (!product) throw new Error(`INVALID_COMPLEMENTARY:${line.product_id}`);
-      assertKnownCatalogEconomics(product, "COMPLEMENTARY");
-      if (product.base_uom_code === "piece" && !Number.isInteger(line.quantity)) throw new Error(`PIECE_QUANTITY_MUST_BE_INTEGER:${line.product_id}`);
-      return { ...line, product };
-    });
+    let complements;
+    try {
+      complements = body.complementary_items.map((line) => {
+        const product = complementaryLookup.get(line.product_id) as any;
+        if (!product) throw new Error(`INVALID_COMPLEMENTARY:${line.product_id}`);
+        assertKnownCatalogEconomics(product, "COMPLEMENTARY");
+        return { ...line, product, quantity_milli: complementaryQuantityMilli(product, line.quantity) };
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "INVALID_COMPLEMENTARY_QUANTITY";
+      if (message.startsWith("DISCRETE_QUANTITY_MUST_BE_INTEGER") || message.startsWith("COMPLEMENTARY_QUANTITY_PRECISION_EXCEEDED") || message.startsWith("INVALID_COMPLEMENTARY_QUANTITY")) {
+        return res.status(400).json({ error: "INVALID_COMPLEMENTARY_QUANTITY", detail: message });
+      }
+      throw error;
+    }
     db.transaction(() => {
       db.prepare("UPDATE kit_variants SET profile_id=?,status=?,missing_mappings_json=?,compatibility_warnings_json=?,updated_at=CURRENT_TIMESTAMP WHERE id=?").run(profile?.id || null, missing.length ? "INCOMPLETE" : "DRAFT", JSON.stringify(missing), JSON.stringify(compatibilityWarnings), req.params.id);
       db.prepare("DELETE FROM kit_variant_connectors WHERE variant_id=?").run(req.params.id);
@@ -207,9 +236,9 @@ export function createKitsRouter(db: Database.Database) {
         const insertCut = db.prepare("INSERT INTO kit_variant_profile_cuts (id,variant_profile_id,quantity,length_mm,label) VALUES (?,?,?,?,?)");
         for (const cut of body.cuts) insertCut.run(crypto.randomUUID(), variantProfileId, cut.quantity, cut.length_mm, cut.label ?? null);
       }
-      const insertComplement = db.prepare(`INSERT INTO kit_variant_complementary_items (id,variant_id,complementary_product_id,quantity_milli,purchase_price_snapshot_cents,sale_price_snapshot_cents,markup_basis_points_snapshot,weight_per_unit_snapshot_grams,product_name_snapshot,unit_type_snapshot)
-        VALUES (?,?,?,?,?,?,?,?,?,?)`);
-      for (const line of complements) insertComplement.run(crypto.randomUUID(), req.params.id, line.product.id, Math.round(line.quantity * 1000), line.product.purchase_unit_price_cents, line.product.sale_unit_price_cents, line.product.markup_basis_points, line.product.weight_per_unit_grams, line.product.name, line.product.unit_type);
+      const insertComplement = db.prepare(`INSERT INTO kit_variant_complementary_items (id,variant_id,complementary_product_id,quantity_milli,purchase_price_snapshot_cents,sale_price_snapshot_cents,markup_basis_points_snapshot,weight_per_unit_snapshot_grams,product_name_snapshot,unit_type_snapshot,base_uom_code_snapshot)
+        VALUES (?,?,?,?,?,?,?,?,?,?,?)`);
+      for (const line of complements) insertComplement.run(crypto.randomUUID(), req.params.id, line.product.id, line.quantity_milli, line.product.purchase_unit_price_cents, line.product.sale_unit_price_cents, line.product.markup_basis_points, line.product.weight_per_unit_grams, line.product.name, line.product.unit_type, line.product.base_uom_code);
       db.prepare("UPDATE kits SET updated_at=CURRENT_TIMESTAMP WHERE id=?").run(variant.kit_id);
     })();
     const detail = variantDetail(db, req.params.id)!;
@@ -245,8 +274,8 @@ export function createKitsRouter(db: Database.Database) {
         const addCut = db.prepare("INSERT INTO kit_variant_profile_cuts (id,variant_profile_id,quantity,length_mm,label) VALUES (?,?,?,?,?)");
         for (const cut of sourceVariant.cuts) addCut.run(crypto.randomUUID(), profileLineId, cut.quantity, cut.length_mm, cut.label);
       }
-      const addComplement = db.prepare(`INSERT INTO kit_variant_complementary_items (id,variant_id,complementary_product_id,quantity_milli,purchase_price_snapshot_cents,sale_price_snapshot_cents,markup_basis_points_snapshot,weight_per_unit_snapshot_grams,product_name_snapshot,unit_type_snapshot) VALUES (?,?,?,?,?,?,?,?,?,?)`);
-      for (const line of sourceVariant.complementary_items) addComplement.run(crypto.randomUUID(), variantId, line.complementary_product_id, line.quantity_milli, line.purchase_price_snapshot_cents, line.sale_price_snapshot_cents, line.markup_basis_points_snapshot, line.weight_per_unit_snapshot_grams, line.product_name_snapshot, line.unit_type_snapshot);
+      const addComplement = db.prepare(`INSERT INTO kit_variant_complementary_items (id,variant_id,complementary_product_id,quantity_milli,purchase_price_snapshot_cents,sale_price_snapshot_cents,markup_basis_points_snapshot,weight_per_unit_snapshot_grams,product_name_snapshot,unit_type_snapshot,base_uom_code_snapshot) VALUES (?,?,?,?,?,?,?,?,?,?,?)`);
+      for (const line of sourceVariant.complementary_items) addComplement.run(crypto.randomUUID(), variantId, line.complementary_product_id, line.quantity_milli, line.purchase_price_snapshot_cents, line.sale_price_snapshot_cents, line.markup_basis_points_snapshot, line.weight_per_unit_snapshot_grams, line.product_name_snapshot, line.unit_type_snapshot, line.base_uom_code_snapshot);
     })();
     savePricingSnapshot(db, variantId, "KIT_COPIED");
     res.status(201).json(kitDetail(db, kitId));
@@ -324,9 +353,9 @@ export function createKitsRouter(db: Database.Database) {
         .run(profileLineId, newVariantId, targetProfile.id, targetProfile.purchase_price_per_meter_cents, targetProfile.sale_price_per_meter_cents, targetProfile.markup_basis_points, targetProfile.weight_per_meter_kg);
       const insertCut = db.prepare("INSERT INTO kit_variant_profile_cuts (id,variant_profile_id,quantity,length_mm,label) VALUES (?,?,?,?,?)");
       for (const cut of source.cuts) insertCut.run(crypto.randomUUID(), profileLineId, cut.quantity, cut.length_mm, cut.label ?? null);
-      const insertComplement = db.prepare(`INSERT INTO kit_variant_complementary_items (id,variant_id,complementary_product_id,quantity_milli,purchase_price_snapshot_cents,sale_price_snapshot_cents,markup_basis_points_snapshot,weight_per_unit_snapshot_grams,product_name_snapshot,unit_type_snapshot)
-        VALUES (?,?,?,?,?,?,?,?,?,?)`);
-      for (const line of source.complementary_items) insertComplement.run(crypto.randomUUID(), newVariantId, line.complementary_product_id, line.quantity_milli, line.purchase_price_snapshot_cents, line.sale_price_snapshot_cents, line.markup_basis_points_snapshot, line.weight_per_unit_snapshot_grams, line.product_name_snapshot, line.unit_type_snapshot);
+      const insertComplement = db.prepare(`INSERT INTO kit_variant_complementary_items (id,variant_id,complementary_product_id,quantity_milli,purchase_price_snapshot_cents,sale_price_snapshot_cents,markup_basis_points_snapshot,weight_per_unit_snapshot_grams,product_name_snapshot,unit_type_snapshot,base_uom_code_snapshot)
+        VALUES (?,?,?,?,?,?,?,?,?,?,?)`);
+      for (const line of source.complementary_items) insertComplement.run(crypto.randomUUID(), newVariantId, line.complementary_product_id, line.quantity_milli, line.purchase_price_snapshot_cents, line.sale_price_snapshot_cents, line.markup_basis_points_snapshot, line.weight_per_unit_snapshot_grams, line.product_name_snapshot, line.unit_type_snapshot, line.base_uom_code_snapshot || line.current_base_uom_code);
       db.prepare("UPDATE kits SET updated_at=CURRENT_TIMESTAMP WHERE id=?").run(source.kit_id);
     })();
     if (!missing.length) savePricingSnapshot(db, newVariantId, "VARIANT_CONVERTED");

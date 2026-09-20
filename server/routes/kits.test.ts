@@ -183,6 +183,72 @@ test("conversion preview is read-only and a full alternative saves as an indepen
   assert.equal(original.variants.length, 1); assert.equal(original.variants[0].profile_id, "profile-sq20");
 });
 
+test("conversion preview and derive fail closed when target catalog economics are UNKNOWN", async () => {
+  const created = await (await fetch(`${baseUrl}/api/kits`, json("POST", { name: "Unknown Economics Source", profile_id: "profile-sq20" }))).json() as any;
+  const sourceId = created.variants[0].id;
+  const saved = await fetch(`${baseUrl}/api/variants/${sourceId}`, json("PUT", {
+    profile_id: "profile-sq20",
+    connectors: [{ role: "ELB", quantity: 2 }],
+    cuts: [{ quantity: 2, length_mm: 1000 }],
+    complementary_items: [{ product_id: "comp-wheel", quantity: 1 }],
+  }));
+  assert.equal(saved.status, 200);
+  const kitCount = Number(db.prepare("SELECT COUNT(*) FROM kits").pluck().get());
+  db.prepare("UPDATE profiles SET cost_status='UNKNOWN',sale_price_status='UNKNOWN' WHERE id='profile-sq40'").run();
+  try {
+    const preview = await fetch(`${baseUrl}/api/variants/${sourceId}/conversion-preview`, json("POST", { target_profile_id: "profile-sq40" }));
+    assert.equal(preview.status, 409);
+    assert.equal((await preview.json() as any).error, "CATALOG_ECONOMICS_UNKNOWN");
+    const derived = await fetch(`${baseUrl}/api/variants/${sourceId}/derive`, json("POST", { target_profile_id: "profile-sq40", name: "Blocked Derived Kit" }));
+    assert.equal(derived.status, 409);
+    assert.equal((await derived.json() as any).error, "CATALOG_ECONOMICS_UNKNOWN");
+    assert.equal(Number(db.prepare("SELECT COUNT(*) FROM kits").pluck().get()), kitCount);
+  } finally {
+    db.prepare("UPDATE profiles SET cost_status='KNOWN',sale_price_status='KNOWN' WHERE id='profile-sq40'").run();
+  }
+  db.prepare("UPDATE complementary_products SET cost_status='UNKNOWN',sale_price_status='UNKNOWN' WHERE id='comp-wheel'").run();
+  try {
+    const preview = await fetch(`${baseUrl}/api/variants/${sourceId}/conversion-preview`, json("POST", { target_profile_id: "profile-sq40" }));
+    assert.equal(preview.status, 409);
+    assert.equal((await preview.json() as any).error, "CATALOG_ECONOMICS_UNKNOWN");
+  } finally {
+    db.prepare("UPDATE complementary_products SET cost_status='KNOWN',sale_price_status='KNOWN' WHERE id='comp-wheel'").run();
+  }
+  db.prepare("UPDATE panel_connector_cache SET cost_status='UNKNOWN',sale_price_status='UNKNOWN' WHERE product_id='panel-s40-elb'").run();
+  try {
+    const options = await fetch(`${baseUrl}/api/variants/${sourceId}/conversion-options?mode=connector`);
+    assert.equal(options.status, 409);
+    assert.equal((await options.json() as any).error, "CATALOG_ECONOMICS_UNKNOWN");
+  } finally {
+    db.prepare("UPDATE panel_connector_cache SET cost_status='KNOWN',sale_price_status='KNOWN' WHERE product_id='panel-s40-elb'").run();
+  }
+});
+
+test("complementary quantities preserve UOM and enforce discrete versus controlled fractional precision", async () => {
+  const insert = db.prepare(`INSERT INTO complementary_products
+    (id,name,sku_optional,legacy_unit_type,unit_type,purchase_unit_price_cents,sale_unit_price_cents,active,catalog_source,catalog_active,catalog_version_ref,uom_registry_version,base_uom_code,cost_status,sale_price_status)
+    VALUES (?,?,?,'PIECE',?,100,150,1,'PANEL',1,?,'uom-registry:v1',?,'KNOWN','KNOWN')`);
+  for (const code of ["kg", "roll", "package", "box"] as const) {
+    insert.run(`quantity-${code}`, `Quantity ${code}`, `Q-${code}`, code, `catalog-product:quantity-${code}:v1`, code);
+  }
+
+  for (const productId of ["comp-wheel", "quantity-roll", "quantity-package", "quantity-box"]) {
+    const response = await fetch(`${baseUrl}/api/pricing/quote`, json("POST", { profile_id: null, connectors: [], cuts: [], complementary_items: [{ product_id: productId, quantity: 1.5 }] }));
+    assert.equal(response.status, 400, productId);
+  }
+  for (const [productId, quantity] of [["comp-pvc", 1.25], ["comp-mdf", 1.75], ["quantity-kg", 0.125]] as const) {
+    const response = await fetch(`${baseUrl}/api/pricing/quote`, json("POST", { profile_id: null, connectors: [], cuts: [], complementary_items: [{ product_id: productId, quantity }] }));
+    assert.equal(response.status, 200, productId);
+  }
+  const overPrecise = await fetch(`${baseUrl}/api/pricing/quote`, json("POST", { profile_id: null, connectors: [], cuts: [], complementary_items: [{ product_id: "quantity-kg", quantity: 0.1234 }] }));
+  assert.equal(overPrecise.status, 400);
+
+  const created = await (await fetch(`${baseUrl}/api/kits`, json("POST", { name: "UOM Snapshot Kit", profile_id: null }))).json() as any;
+  const saved = await fetch(`${baseUrl}/api/variants/${created.variants[0].id}`, json("PUT", { profile_id: null, connectors: [], cuts: [], complementary_items: [{ product_id: "quantity-kg", quantity: 0.125 }] }));
+  assert.equal(saved.status, 200);
+  assert.equal((db.prepare("SELECT base_uom_code_snapshot FROM kit_variant_complementary_items WHERE variant_id=?").get(created.variants[0].id) as any).base_uom_code_snapshot, "kg");
+});
+
 test("partial conversion reports the missing model and profile variants recalculate weight and profit", async () => {
   db.prepare("INSERT INTO profile_specs (id,shape,material,width_mm,height_mm,wall_thickness_mm,compatibility_group,size_compatibility_group) VALUES ('spec-sq20-heavy','SQUARE','Aluminum',20,20,2.5,'SQ-20X20|heavy','SQ-20X20')").run();
   db.prepare("INSERT INTO profiles (id,spec_id,name,raw_length_mm,weight_per_meter_kg,purchase_price_per_meter_cents,sale_price_per_meter_cents,markup_basis_points,catalog_source,catalog_active,catalog_version_ref,uom_registry_version,base_uom_code,cost_status,sale_price_status) VALUES ('profile-sq20-heavy','spec-sq20-heavy','Square 20×20 Aluminum 2.5 mm',6000,0.65,14000,20000,4286,'PANEL',1,'catalog-product:profile-sq20-heavy:v1','uom-registry:v1','meter','KNOWN','KNOWN')").run();
