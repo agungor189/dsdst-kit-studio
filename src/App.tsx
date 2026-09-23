@@ -735,7 +735,7 @@ function KitEditor({
             {
               product_id: profile.id,
               quantity_base_int: cuts.reduce(
-                (sum, cut) => sum + cut.quantity * (cut.length_mm + kerfMm),
+                (sum, cut) => sum + cut.quantity * cut.length_mm,
                 0,
               ),
             },

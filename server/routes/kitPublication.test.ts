@@ -53,7 +53,7 @@ async function createPublishable(baseUrl: string) {
     installation_guide_version: "guide:v1",
     packages: [{ package_number: 1, items: [
       { product_id: "panel-s20-elb", quantity_base_int: 2 },
-      { product_id: "profile-sq20", quantity_base_int: 1803 },
+      { product_id: "profile-sq20", quantity_base_int: 1800 },
     ] }],
   }));
   assert.equal(draft.status, 200);
@@ -67,6 +67,7 @@ test("real Kit route path previews, publishes once, replays locally and freezes 
     assert.equal(previewResponse.status, 200);
     const preview = await previewResponse.json() as any;
     assert.equal(preview.proposal.profileCutPlan.cuts[0].lengthMm, 1800);
+    assert.equal(preview.proposal.packagingPlan.packages[0].items.find((item: any) => item.productId === "profile-sq20").quantityBaseInt, 1800);
     const publishBody = { approved_content_hash: preview.preview.contentHash, approved_policy_hash: preview.preview.corePolicyHash };
     const published = await fetch(`${baseUrl}/api/variants/${variantId}/publish`, json("POST", publishBody, "publish-operation-1"));
     assert.equal(published.status, 201);
