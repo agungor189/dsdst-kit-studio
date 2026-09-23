@@ -15,7 +15,7 @@ export function resolveMigrationDirectory(candidates = [
 
 const migrationDir = resolveMigrationDirectory();
 
-export const CURRENT_SCHEMA_VERSION = 9;
+export const CURRENT_SCHEMA_VERSION = 10;
 export const SUPPORTED_UPGRADE_STARTS = [1, 5] as const;
 
 export type MigrationManifestEntry = {
@@ -34,6 +34,7 @@ const FROZEN_MIGRATIONS: readonly MigrationManifestEntry[] = [
   { version: 7, name: "007_catalog_uom_contract.sql", checksum: "a8c6bbdbb5aac2e20ead6450fd57b6b52f91472c35115ac8bbf9747a5fa7b611" },
   { version: 8, name: "008_catalog_economics_and_precision.sql", checksum: "b6bb5615cfc3b4f3f20ff6fa5e3fd4e3c5e61698b85b351d1340b0a669e06a0c" },
   { version: 9, name: "009_complementary_uom_semantics.sql", checksum: "3865907aa1a0b7b4cb46964b778a4eb19fc1fdf26b83373637517d4f854ec58f" },
+  { version: 10, name: "010_kit_publication_workflow.sql", checksum: "41e93d53fadb4e7a745e3251d10c1b89276df6e529437536c399e3e5e86b9b85" },
 ];
 
 export function getMigrationManifest(): MigrationManifestEntry[] {

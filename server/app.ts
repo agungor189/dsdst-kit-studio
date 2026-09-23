@@ -10,12 +10,12 @@ import { createAppAuth, createTestAuth, requireBusinessAccess, requireKitAccess 
 import { createAuthRouter } from "./routes/auth.js";
 import { createCatalogRouter } from "./routes/catalog.js";
 import { createCompatibilityRouter } from "./routes/compatibility.js";
-import { createKitsRouter } from "./routes/kits.js";
+import { createKitsRouter, type PublicationDependencies } from "./routes/kits.js";
 import { defaultPanelAuthClient, type PanelAuthClient, type PanelUser } from "./services/panelAuthClient.js";
 import { ensureOwnedUploadRoot } from "./services/fileContainment.js";
 import type { LoginRateLimitOptions } from "./middleware/loginRateLimit.js";
 
-type AppOptions = { authDisabled?: boolean; testUser?: PanelUser; panelAuthClient?: PanelAuthClient; loginRateLimit?: LoginRateLimitOptions };
+type AppOptions = { authDisabled?: boolean; testUser?: PanelUser; panelAuthClient?: PanelAuthClient; loginRateLimit?: LoginRateLimitOptions; publication?: PublicationDependencies };
 
 export function createApp(db: Database.Database, options: AppOptions = {}) {
   const app = express();
@@ -32,7 +32,7 @@ export function createApp(db: Database.Database, options: AppOptions = {}) {
   app.get("/api/health", (_req, res) => res.json({ status: "ok" }));
   app.use("/api/auth", createAuthRouter(panelAuthClient, options.loginRateLimit, allowedOrigins));
   const authenticated = options.authDisabled ? createTestAuth(options.testUser) : createAppAuth(panelAuthClient, allowedOrigins);
-  app.use("/api", authenticated, requireBusinessAccess, requireKitAccess, createCatalogRouter(db), createCompatibilityRouter(db), createKitsRouter(db));
+  app.use("/api", authenticated, requireBusinessAccess, requireKitAccess, createCatalogRouter(db), createCompatibilityRouter(db), createKitsRouter(db, options.publication));
 
   const dist = path.resolve("dist");
   if (fs.existsSync(dist)) {

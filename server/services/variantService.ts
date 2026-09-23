@@ -12,6 +12,7 @@ export function variantDetail(db: Database.Database, variantId: string) {
   variant.missing_mappings = JSON.parse(variant.missing_mappings_json || "[]");
   variant.compatibility_warnings = JSON.parse(variant.compatibility_warnings_json || "[]");
   variant.connectors = db.prepare(`SELECT line.*,cache.image current_image,cache.central_stock current_stock,cache.name_tr current_name,cache.sku current_sku,
+    cache.catalog_version_ref,cache.base_uom_code current_base_uom_code,
     cache.purchase_cost_cents current_purchase_cost_cents,cache.unit_weight_grams current_unit_weight_grams,cache.catalog_active
     FROM kit_variant_connectors line LEFT JOIN panel_connector_cache cache ON cache.product_id=line.product_id
     WHERE line.variant_id=? ORDER BY line.connector_role`).all(variantId);

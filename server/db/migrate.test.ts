@@ -18,12 +18,12 @@ function applyLegacyPrefix(db: Database.Database, throughVersion: number): void 
   }
 }
 
-test("fresh production database reaches the exact empty v9 schema", () => {
+test("fresh production database reaches the exact empty v10 schema", () => {
   const db = new Database(":memory:");
   db.pragma("foreign_keys = ON");
   runMigrations(db);
   const manifest = getMigrationManifest();
-  assert.equal(manifest.length, 9);
+  assert.equal(manifest.length, 10);
   assert.equal(manifest.at(-1)?.version, CURRENT_SCHEMA_VERSION);
   assert.deepEqual(SUPPORTED_UPGRADE_STARTS, [1, 5]);
   assert.deepEqual(db.prepare("SELECT version, name, checksum FROM schema_migrations ORDER BY version").all(), manifest);
@@ -32,6 +32,7 @@ test("fresh production database reaches the exact empty v9 schema", () => {
   for (const table of [
     "suppliers", "profile_specs", "profiles", "profile_supplier_offers", "complementary_products",
     "panel_connector_cache", "kits", "kit_variants", "kit_versions", "kit_pricing_snapshots", "kit_images",
+    "kit_packaging_packages", "kit_packaging_items", "kit_publication_attempts",
   ]) assert.equal(count(db, table), 0, `${table} must contain no production bootstrap business rows`);
   assert.equal(count(db, "connector_roles"), 14);
   assert.equal(count(db, "app_settings"), 6);
@@ -46,6 +47,9 @@ test("fresh production database reaches the exact empty v9 schema", () => {
   assert.ok(complementColumns.includes("legacy_unit_type"));
   const lineColumns = (db.prepare("PRAGMA table_info(kit_variant_complementary_items)").all() as Array<{ name: string }>).map(({ name }) => name);
   assert.ok(lineColumns.includes("base_uom_code_snapshot"));
+  const kitColumns = (db.prepare("PRAGMA table_info(kits)").all() as Array<{ name: string }>).map(({ name }) => name);
+  assert.ok(kitColumns.includes("current_published_version_id"));
+  assert.ok(kitColumns.includes("final_sale_price_minor"));
   const indexes = (db.prepare("PRAGMA index_list(kits)").all() as Array<{ name: string }>).map(({ name }) => name);
   assert.ok(indexes.includes("idx_kits_active_sku"));
 
@@ -69,7 +73,7 @@ for (const start of SUPPORTED_UPGRADE_STARTS) {
     }
     runMigrations(db);
     assert.equal((db.prepare("SELECT MAX(version) AS version FROM schema_migrations").get() as { version: number }).version, CURRENT_SCHEMA_VERSION);
-    assert.equal(count(db, "schema_migrations"), 9);
+    assert.equal(count(db, "schema_migrations"), 10);
     assert.equal(count(db, start === 1 ? "profiles" : "kits"), 1);
     const first = db.prepare("SELECT version, name, checksum FROM schema_migrations ORDER BY version").all();
     runMigrations(db);
