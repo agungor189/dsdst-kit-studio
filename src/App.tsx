@@ -14,12 +14,10 @@ import {
   Copy,
   Edit3,
   ImageOff,
-  LogOut,
   PackagePlus,
   Plus,
   RefreshCw,
   Search,
-  Settings2,
   Trash2,
   Wrench,
   X,
@@ -54,6 +52,8 @@ import {
   parseLengthToMm,
   type DisplayLengthUnit,
 } from "./lengthUnits";
+import { AppShell, type StudioView } from "./components/layout/AppShell";
+import { Badge, Button, Card, ConfirmDialog, EmptyState, Input, LoadingState, Modal, PageHeader, Select } from "./components/ui";
 
 const money = (cents: number | null | undefined) =>
   cents == null || !Number.isFinite(cents)
@@ -101,14 +101,13 @@ const searchKey = (value: string) =>
     .replace(/ı/g, "i")
     .replace(/İ/g, "I")
     .toUpperCase();
-type View = "kits" | "editor" | "catalogs";
 type EditorMode = "create" | "edit" | "view";
 
 export default function App() {
   const [user, setUser] = useState<User | null>(null);
   const [data, setData] = useState<Bootstrap | null>(null);
   const [kits, setKits] = useState<Kit[]>([]);
-  const [view, setView] = useState<View>("kits");
+  const [view, setView] = useState<StudioView>("kits");
   const [editor, setEditor] = useState<{ mode: EditorMode; kit?: Kit }>({
     mode: "create",
   });
@@ -175,7 +174,7 @@ export default function App() {
     setView("editor");
     setMessage("");
   };
-  if (loading) return <div className="loading">Oturum denetleniyor…</div>;
+  if (loading) return <LoadingState fullScreen label="Oturum denetleniyor…"/>;
   if (!user) return <LoginScreen onSubmit={login} error={message} />;
   if (user.must_change_password)
     return (
@@ -188,52 +187,13 @@ export default function App() {
         onLogout={logout}
       />
     );
-  if (!data) return <div className="loading">Katalog hazırlanıyor…</div>;
+  if (!data) return <LoadingState fullScreen label="Katalog hazırlanıyor…"/>;
   const canWrite =
     user.role === "admin" || user.permissions?.["kits:write"] === true;
   const canApprove =
     user.role === "admin" || user.permissions?.["kits:approve"] === true;
   return (
-    <div className="app-shell">
-      <header className="topbar">
-        <div className="brand-mark">
-          <Wrench size={18} />
-        </div>
-        <div className="brand-copy">
-          <strong>DSDST</strong>
-          <span>Kit Studio</span>
-        </div>
-        <nav>
-          <button
-            className={view === "kits" ? "nav-active" : ""}
-            onClick={() => setView("kits")}
-          >
-            <Boxes size={16} />
-            Kitler
-          </button>
-          {canWrite && (
-            <button onClick={() => openEditor("create")}>
-              <Plus size={16} />
-              Yeni Kit
-            </button>
-          )}
-          <button
-            className={view === "catalogs" ? "nav-active" : ""}
-            onClick={() => setView("catalogs")}
-          >
-            <Settings2 size={16} />
-            Katalog
-          </button>
-        </nav>
-        <div className="user-chip">
-          <strong>{user.username}</strong>
-          <span>{user.role}</span>
-        </div>
-        <button className="icon-button" onClick={logout}>
-          <LogOut size={18} />
-        </button>
-      </header>
-      {message && <div className="global-notice">{message}</div>}
+    <AppShell user={user} activeView={view} canWrite={canWrite} notice={message} onNavigate={setView} onCreate={() => openEditor("create")} onLogout={() => void logout()}>
       {view === "kits" && (
         <KitList
           kits={kits}
@@ -269,11 +229,11 @@ export default function App() {
           }}
         />
       )}
-    </div>
+    </AppShell>
   );
 }
 
-function KitList({
+export function KitList({
   kits,
   canWrite,
   onOpen,
@@ -287,6 +247,7 @@ function KitList({
   setMessage: (value: string) => void;
 }) {
   const [query, setQuery] = useState("");
+  const [pendingDelete, setPendingDelete] = useState<Kit | null>(null);
   const visible = kits.filter((kit) =>
     `${kit.name} ${kit.sku || ""}`
       .toLocaleLowerCase("tr")
@@ -302,39 +263,25 @@ function KitList({
     setMessage(`${kit.name} kopyalandı`);
   }
   async function remove(kit: Kit) {
-    if (!confirm(`“${kit.name}” kitini silmek istediğinize emin misiniz?`))
-      return;
     await apiFetch(`/api/kits/${kit.id}`, { method: "DELETE" });
     await onChanged();
+    setPendingDelete(null);
   }
   return (
     <main className="page-view">
-      <div className="page-title">
-        <div>
-          <span className="eyebrow">Kit oluşturma merkezi</span>
-          <h1>Kitler</h1>
-          <p>{kits.length} kayıt · maliyet, satış ve kârlılık tek görünümde</p>
-        </div>
-        {canWrite && (
-          <button className="primary-action" onClick={() => onOpen("create")}>
-            <Plus size={17} />
-            Yeni Kit
-          </button>
-        )}
-      </div>
+      <PageHeader eyebrow="Kit oluşturma merkezi" title="Kitler" description={`${kits.length} kayıt · maliyet, satış ve kârlılık tek görünümde`} actions={canWrite && <Button onClick={() => onOpen("create")}><Plus size={17}/>Yeni Kit</Button>}/>
       <label className="page-search">
         <Search size={17} />
-        <input
+        <Input
+          aria-label="Kit ara"
+          containerClassName="ui-search-field"
           value={query}
           onChange={(event) => setQuery(event.target.value)}
           placeholder="Kit adı veya SKU ara"
         />
       </label>
       {visible.length === 0 ? (
-        <div className="empty-state">
-          <Boxes size={34} />
-          <h2>Henüz eşleşen kit yok</h2>
-        </div>
+        <EmptyState icon={<Boxes size={34}/>} title="Henüz eşleşen kit yok"/>
       ) : (
         <div className="kit-table-wrap">
           <table className="kit-table">
@@ -384,23 +331,26 @@ function KitList({
                   <td>{kit.variants.length}</td>
                   <td>
                     <div className="row-actions">
-                      <button onClick={() => onOpen("view", kit)}>
+                      <Button variant="ghost" size="sm" aria-label={`${kit.name} görüntüle`} onClick={() => onOpen("view", kit)}>
                         <Search size={15} />
-                      </button>
+                      </Button>
                       {canWrite && (
                         <>
-                          <button onClick={() => onOpen("edit", kit)}>
+                          <Button variant="ghost" size="sm" aria-label={`${kit.name} düzenle`} onClick={() => onOpen("edit", kit)}>
                             <Edit3 size={15} />
-                          </button>
-                          <button onClick={() => void copy(kit)}>
+                          </Button>
+                          <Button variant="ghost" size="sm" aria-label={`${kit.name} kopyala`} onClick={() => void copy(kit)}>
                             <Copy size={15} />
-                          </button>
-                          <button
+                          </Button>
+                          <Button
+                            variant="ghost"
+                            size="sm"
                             className="danger"
-                            onClick={() => void remove(kit)}
+                            aria-label={`${kit.name} sil`}
+                            onClick={() => setPendingDelete(kit)}
                           >
                             <Trash2 size={15} />
-                          </button>
+                          </Button>
                         </>
                       )}
                     </div>
@@ -411,11 +361,12 @@ function KitList({
           </table>
         </div>
       )}
+      <ConfirmDialog open={Boolean(pendingDelete)} onClose={() => setPendingDelete(null)} onConfirm={() => pendingDelete ? remove(pendingDelete) : undefined} title="Kiti silmek istiyor musunuz?" description={pendingDelete ? `“${pendingDelete.name}” kalıcı olarak silinecek.` : undefined} confirmLabel="Kiti sil" destructive/>
     </main>
   );
 }
 
-function KitEditor({
+export function KitEditor({
   mode,
   initialKit,
   data,
@@ -810,10 +761,10 @@ function KitEditor({
   return (
     <main className="editor-page">
       <div className="editor-toolbar">
-        <button className="back-button" onClick={onBack}>
+        <Button variant="secondary" className="back-button" onClick={onBack}>
           <ChevronLeft size={18} />
           Kitler
-        </button>
+        </Button>
         <div>
           <span className="eyebrow">
             {mode === "create" ? "Yeni kit" : "Kit konfigürasyonu"}
@@ -821,14 +772,14 @@ function KitEditor({
           <h1>{name || "Adsız kit"}</h1>
         </div>
         {!readOnly && (
-          <button
-            className="primary-action"
-            disabled={saving}
+          <Button
+            loading={saving}
+            loadingText="Kaydediliyor…"
             onClick={() => void save()}
           >
             <Check size={17} />
-            {saving ? "Kaydediliyor…" : "Kaydet"}
-          </button>
+            Kaydet
+          </Button>
         )}
       </div>
       <section className="active-config">
@@ -859,32 +810,32 @@ function KitEditor({
           </small>
         </div>
         <div className="quick-actions">
-          <button onClick={() => setPicker("connector")} disabled={readOnly}>
+          <Button variant="ghost" onClick={() => setPicker("connector")} disabled={readOnly}>
             <Plus size={14} />
             Bağlantı Ekle
-          </button>
-          <button onClick={() => setPicker("profile")} disabled={readOnly}>
+          </Button>
+          <Button variant="ghost" onClick={() => setPicker("profile")} disabled={readOnly}>
             <Plus size={14} />
             Profil Ekle
-          </button>
-          <button onClick={() => setPicker("complement")} disabled={readOnly}>
+          </Button>
+          <Button variant="ghost" onClick={() => setPicker("complement")} disabled={readOnly}>
             <Plus size={14} />
             Tamamlayıcı Ekle
-          </button>
-          <button
+          </Button>
+          <Button variant="ghost"
             onClick={() => setCompareMode("connector")}
             disabled={!kit || !active || !profile}
           >
             <Copy size={14} />
             Kit Dönüştür / Karşılaştır
-          </button>
-          <button
+          </Button>
+          <Button variant="ghost"
             onClick={() => setCompareMode("profile")}
             disabled={!kit || !active || !profile}
           >
             <Copy size={14} />
             Profil Değiştir / Karşılaştır
-          </button>
+          </Button>
         </div>
       </section>
       {kit && kit.variants.length > 1 && (
@@ -912,7 +863,7 @@ function KitEditor({
       )}
       <div className="editor-grid">
         <section className="editor-main">
-          <div className="card">
+          <Card>
             <div className="card-title">
               <div>
                 <span className="eyebrow">1 · Temel bilgiler</span>
@@ -920,22 +871,8 @@ function KitEditor({
               </div>
             </div>
             <div className="form-grid">
-              <label>
-                Kit adı
-                <input
-                  disabled={readOnly}
-                  value={name}
-                  onChange={(e) => setName(e.target.value)}
-                />
-              </label>
-              <label>
-                SKU
-                <input
-                  disabled={readOnly}
-                  value={sku || ""}
-                  onChange={(e) => setSku(e.target.value)}
-                />
-              </label>
+              <Input label="Kit adı" disabled={readOnly} value={name} onChange={(e) => setName(e.target.value)}/>
+              <Input label="SKU" disabled={readOnly} value={sku || ""} onChange={(e) => setSku(e.target.value)}/>
               <label className="span-2">
                 Açıklama
                 <textarea
@@ -978,16 +915,16 @@ function KitEditor({
                 ))}
               </div>
             )}
-          </div>
+          </Card>
           <BomSection
             title="Bağlantı Elemanları"
             count={`${connectorLines.reduce((sum, line) => sum + line.quantity, 0)} adet`}
             action={
               !readOnly && (
-                <button onClick={() => setPicker("connector")}>
+                <Button variant="secondary" size="sm" onClick={() => setPicker("connector")}>
                   <Plus size={15} />
                   Bağlantı Ekle
-                </button>
+                </Button>
               )
             }
             empty={!connectorLines.length}
@@ -1027,10 +964,10 @@ function KitEditor({
             count={`${usedMm} mm`}
             action={
               !readOnly && (
-                <button onClick={() => setPicker("profile")}>
+                <Button variant="secondary" size="sm" onClick={() => setPicker("profile")}>
                   <Plus size={15} />
                   {profile ? "Profili Değiştir" : "Profil Ekle"}
-                </button>
+                </Button>
               )
             }
             empty={!profile}
@@ -1196,10 +1133,10 @@ function KitEditor({
             count={`${complementLines.length} kalem`}
             action={
               !readOnly && (
-                <button onClick={() => setPicker("complement")}>
+                <Button variant="secondary" size="sm" onClick={() => setPicker("complement")}>
                   <Plus size={15} />
                   Ürün Ekle
-                </button>
+                </Button>
               )
             }
             empty={!complementLines.length}
@@ -1231,7 +1168,7 @@ function KitEditor({
             ))}
           </BomSection>
         </section>
-        <aside className="summary-card">
+        <Card as="aside" className="summary-card">
           <span className="eyebrow">5 · Canlı fiyat özeti</span>
           <h2>Otomatik kit fiyatı</h2>
           <CategoryPricing
@@ -1366,10 +1303,10 @@ function KitEditor({
             </div>
           )}
           {error && <div className="error-box">{error}</div>}
-        </aside>
+        </Card>
       </div>
       {kit && active && (
-        <section className="card">
+        <Card as="section">
           <div className="card-title">
             <div>
               <span className="eyebrow">6 · Yayınlama</span>
@@ -1462,7 +1399,7 @@ function KitEditor({
               </button>
             </div>
           )}
-        </section>
+        </Card>
       )}
       {picker && (
         <CatalogPicker
@@ -2510,16 +2447,7 @@ function CatalogManager({
   }
   return (
     <main className="page-view">
-      <div className="page-title">
-        <div>
-          <span className="eyebrow">Panel katalog görünümü</span>
-          <h1>Katalog</h1>
-          <p>
-            Canonical ürün, profil ve UOM verileri Panel’den salt okunur
-            sözleşmeyle alınır.
-          </p>
-        </div>
-      </div>
+      <PageHeader eyebrow="Panel katalog görünümü" title="Katalog" description="Canonical ürün, profil ve UOM verileri Panel’den salt okunur sözleşmeyle alınır."/>
       <div className="catalog-tabs">
         <button
           className={tab === "profiles" ? "active" : ""}
@@ -2574,14 +2502,15 @@ function CatalogManager({
             />
           </div>
           {canWrite && (
-            <button
-              className="primary-action sync-button"
-              disabled={busy}
+            <Button
+              className="sync-button"
+              loading={busy}
+              loadingText="Senkronize ediliyor…"
               onClick={() => void sync()}
             >
               <RefreshCw size={17} />
-              {busy ? "Senkronize ediliyor…" : "Şimdi senkronize et"}
-            </button>
+              Şimdi senkronize et
+            </Button>
           )}
           <div className="info-card">
             <strong>Canonical authority Panel</strong>
@@ -2608,25 +2537,27 @@ function ProfileCatalogView({ profiles }: { profiles: Profile[] }) {
       <div className="catalog-view-tools">
         <label className="page-search">
           <Search size={16} />
-          <input
+          <Input
+            aria-label="Profil ara"
+            containerClassName="ui-search-field"
             value={query}
             onChange={(event) => setQuery(event.target.value)}
             placeholder="Kod, fiziksel/nominal ölçü, malzeme, et kalınlığı veya tedarikçi ara"
           />
         </label>
         <div className="view-toggle">
-          <button
+          <Button variant="ghost"
             className={view === "category" ? "active" : ""}
             onClick={() => setView("category")}
           >
             Kategoriler
-          </button>
-          <button
+          </Button>
+          <Button variant="ghost"
             className={view === "table" ? "active" : ""}
             onClick={() => setView("table")}
           >
             Tablo
-          </button>
+          </Button>
         </div>
       </div>
       {view === "category" ? (
@@ -2885,37 +2816,20 @@ function ProfileForm({
     await onSaved();
   }
   return (
-    <div className="modal-backdrop">
-      <form className="form-modal" onSubmit={submit}>
-        <div className="modal-head">
-          <div>
-            <span className="eyebrow">Profil kataloğu</span>
-            <h2>{value ? "Profili düzenle" : "Yeni profil"}</h2>
-          </div>
-          <button type="button" onClick={onClose}>
-            <X size={19} />
-          </button>
-        </div>
+    <Modal open onClose={onClose} title={value ? "Profili düzenle" : "Yeni profil"} description="Profil kataloğu" className="form-modal" size="lg">
+      <form onSubmit={submit}>
         <div className="modal-form">
           <label>
             Ürün adı
             <input name="name" required defaultValue={value?.name} />
           </label>
-          <label>
-            Malzeme
-            <select
-              value={materialChoice}
-              onChange={(event) =>
-                setMaterialChoice(event.target.value as CanonicalMaterial)
-              }
-            >
+          <Select label="Malzeme" value={materialChoice} onChange={(event) => setMaterialChoice(event.target.value as CanonicalMaterial)}>
               {MATERIAL_ORDER.map((material) => (
                 <option key={material} value={material}>
                   {MATERIAL_LABELS[material]}
                 </option>
               ))}
-            </select>
-          </label>
+          </Select>
           {materialChoice === "OTHER" && (
             <label className="span-2">
               Özel malzeme adı
@@ -2927,17 +2841,11 @@ function ProfileForm({
               />
             </label>
           )}
-          <label>
-            Profil şekli
-            <select
-              value={shape}
-              onChange={(e) => setShape(e.target.value as Profile["shape"])}
-            >
+          <Select label="Profil şekli" value={shape} onChange={(e) => setShape(e.target.value as Profile["shape"])}>
               <option value="SQUARE">Kare</option>
               <option value="RECTANGULAR">Dikdörtgen</option>
               <option value="ROUND">Yuvarlak</option>
-            </select>
-          </label>
+          </Select>
           {shape === "ROUND" ? (
             <label>
               Dış çap (mm)
@@ -3081,19 +2989,18 @@ function ProfileForm({
           </label>
           {error && <div className="error-box span-2">{error}</div>}
           <div className="modal-actions span-2">
-            <button type="button" onClick={onClose}>
+            <Button variant="secondary" type="button" onClick={onClose}>
               Vazgeç
-            </button>
-            <button
-              className="primary-action"
+            </Button>
+            <Button type="submit"
               disabled={materialChoice === "OTHER" && !customMaterial.trim()}
             >
               Kaydet
-            </button>
+            </Button>
           </div>
         </div>
       </form>
-    </div>
+    </Modal>
   );
 }
 
@@ -3159,17 +3066,8 @@ function ComplementForm({
           ? "g/m²"
           : `g/${unit}`;
   return (
-    <div className="modal-backdrop">
-      <form className="form-modal" onSubmit={submit}>
-        <div className="modal-head">
-          <div>
-            <span className="eyebrow">Tamamlayıcı katalog</span>
-            <h2>{value ? "Ürünü düzenle" : "Yeni tamamlayıcı ürün"}</h2>
-          </div>
-          <button type="button" onClick={onClose}>
-            <X size={19} />
-          </button>
-        </div>
+    <Modal open onClose={onClose} title={value ? "Ürünü düzenle" : "Yeni tamamlayıcı ürün"} description="Tamamlayıcı katalog" className="form-modal" size="lg">
+      <form onSubmit={submit}>
         <div className="modal-form">
           <label>
             Ürün adı
@@ -3272,14 +3170,14 @@ function ComplementForm({
           </label>
           {error && <div className="error-box span-2">{error}</div>}
           <div className="modal-actions span-2">
-            <button type="button" onClick={onClose}>
+            <Button variant="secondary" type="button" onClick={onClose}>
               Vazgeç
-            </button>
-            <button className="primary-action">Kaydet</button>
+            </Button>
+            <Button type="submit">Kaydet</Button>
           </div>
         </div>
       </form>
-    </div>
+    </Modal>
   );
 }
 
@@ -3297,16 +3195,16 @@ function BomSection({
   children: ReactNode;
 }) {
   return (
-    <div className="card">
+    <Card>
       <div className="card-title">
         <div>
           <h2>{title}</h2>
-          <span>{count}</span>
+          <Badge>{count}</Badge>
         </div>
         {action}
       </div>
       {empty ? <div className="empty-row">Henüz ürün eklenmedi</div> : children}
-    </div>
+    </Card>
   );
 }
 function ProductRow({
@@ -3429,11 +3327,11 @@ function MetricLine({ label, value }: { label: string; value: string }) {
 }
 function Stat({ label, value }: { label: string; value: number }) {
   return (
-    <article className="stat">
+    <Card as="article" className="stat">
       <Boxes />
       <span>{label}</span>
       <strong>{value}</strong>
-    </article>
+    </Card>
   );
 }
 function LoginScreen({
@@ -3445,16 +3343,16 @@ function LoginScreen({
 }) {
   return (
     <div className="auth-screen">
-      <form onSubmit={onSubmit}>
+      <Card as="form" onSubmit={onSubmit}>
         <div className="brand-mark">
           <Wrench size={18} />
         </div>
         <h1>Panel hesabınızla giriş yapın</h1>
-        <input name="username" placeholder="Kullanıcı adı" />
-        <input name="password" type="password" placeholder="Parola" />
-        <button className="primary-action full">Giriş yap</button>
+        <Input name="username" autoComplete="username" placeholder="Kullanıcı adı" />
+        <Input name="password" type="password" autoComplete="current-password" placeholder="Parola" />
+        <Button type="submit" className="full">Giriş yap</Button>
         {error && <small>{error}</small>}
-      </form>
+      </Card>
     </div>
   );
 }
@@ -3485,27 +3383,29 @@ function PasswordChange({
   }
   return (
     <div className="auth-screen">
-      <form onSubmit={submit}>
+      <Card as="form" onSubmit={submit}>
         <h1>Parolanızı değiştirin</h1>
-        <input name="current" type="password" placeholder="Mevcut parola" />
-        <input
+        <Input name="current" type="password" autoComplete="current-password" placeholder="Mevcut parola" />
+        <Input
           name="new"
           type="password"
+          autoComplete="new-password"
           minLength={8}
           placeholder="Yeni parola"
         />
-        <input
+        <Input
           name="confirm"
           type="password"
+          autoComplete="new-password"
           minLength={8}
           placeholder="Yeni parola tekrar"
         />
-        <button className="primary-action full">Parolayı değiştir</button>
-        <button type="button" className="link-button" onClick={onLogout}>
+        <Button type="submit" className="full">Parolayı değiştir</Button>
+        <Button variant="ghost" type="button" className="link-button" onClick={onLogout}>
           Çıkış yap
-        </button>
+        </Button>
         {error && <small>{error}</small>}
-      </form>
+      </Card>
     </div>
   );
 }
